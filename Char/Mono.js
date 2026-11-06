@@ -6,11 +6,11 @@
  * THREE hanya dipakai sebagai wadah akhir (Group, BufferGeometry, Mesh).
  *
  * JENIS OBJEK YANG DIPAKAI
- *   1. Ellipsoid (quadric)                  : mata, telapak tangan, telapak kaki, kancing
- *   2. Hyperboloid satu lembar (quadric)    : kepala kantong kertas
+ *   1. Ellipsoid (quadric)                  : telapak tangan, kancing
+ *   2. Hyperboloid satu lembar (quadric)    : kepala di dalam kantong kertas
  *   3. Cylinder / cone terpotong (quadric)  : badan jas, dalaman, leher, kaki, manset
- *   + Torus                                 : cincin ujung celana
- *   + Tube hasil sapuan kurva Bezier kubik  : lengan, lapel, lipatan kantong, jari tangan, jari kaki
+ *   + Sphere kecil                         : mata pada kantong kertas
+ *   + Tube hasil sapuan kurva Bezier kubik  : lengan, tangan, kaki, jari
  *   + Extrude kurva Bezier (+ bevel)        : jubah di punggung
  * ========================================================== */
 
@@ -23,19 +23,12 @@ window.createMonoModel = function () {
     /* ==========================================================
      *  BAGIAN 1 : MATEMATIKA KECIL
      * ========================================================== */
-    const vAdd = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-    const vSub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    const vMul = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
-    const vDot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    const vCross = (a, b) => [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0]
-    ];
-    const vNorm = a => {
-        const l = Math.hypot(a[0], a[1], a[2]);
-        return l > 1e-12 ? [a[0] / l, a[1] / l, a[2] / l] : [0, 1, 0];
-    };
+    const vAdd = LIBS.vec3.add;
+    const vSub = LIBS.vec3.sub;
+    const vMul = LIBS.vec3.mul;
+    const vDot = LIBS.vec3.dot;
+    const vCross = LIBS.vec3.cross;
+    const vNorm = LIBS.vec3.norm;
 
     // matriks 3x3 disimpan row-major (9 angka)
     const mApply = (m, v) => [
@@ -79,11 +72,12 @@ window.createMonoModel = function () {
     /* ==========================================================
      *  BAGIAN 2 : WADAH MESH + UTILITAS
      * ========================================================== */
-    const newGeo = () => ({ pos: [], nor: [], idx: [] });
+    const newGeo = () => ({ pos: [], nor: [], uv: [], idx: [] });
 
-    function pushVertex(g, p, n) {
+    function pushVertex(g, p, n, uv) {
         g.pos.push(p[0], p[1], p[2]);
         g.nor.push(n[0], n[1], n[2]);
+        g.uv.push(uv ? uv[0] : 0, uv ? uv[1] : 0);
         return g.pos.length / 3 - 1;
     }
 
@@ -115,25 +109,6 @@ window.createMonoModel = function () {
         return g;
     }
 
-    // normal halus dari rata-rata normal bidang (berbobot luas) di tiap vertex
-    function smoothNormals(g) {
-        const acc = new Array(g.pos.length).fill(0), P = g.pos, I = g.idx;
-        for (let t = 0; t < I.length; t += 3) {
-            const a = I[t] * 3, b = I[t + 1] * 3, c = I[t + 2] * 3;
-            const f = vCross(
-                [P[b] - P[a], P[b + 1] - P[a + 1], P[b + 2] - P[a + 2]],
-                [P[c] - P[a], P[c + 1] - P[a + 1], P[c + 2] - P[a + 2]]
-            );
-            [a, b, c].forEach(o => { acc[o] += f[0]; acc[o + 1] += f[1]; acc[o + 2] += f[2]; });
-        }
-        g.nor = [];
-        for (let i = 0; i < acc.length; i += 3) {
-            const n = vNorm([acc[i], acc[i + 1], acc[i + 2]]);
-            g.nor.push(n[0], n[1], n[2]);
-        }
-        return g;
-    }
-
     // skala -> rotasi -> translasi (normal memakai invers-transpos agar benar saat skala tak seragam)
     function place(g, o) {
         o = o || {};
@@ -148,13 +123,18 @@ window.createMonoModel = function () {
             const n = vNorm(mApply(R, [g.nor[i] / sc[0], g.nor[i + 1] / sc[1], g.nor[i + 2] / sc[2]]));
             out.nor.push(n[0], n[1], n[2]);
         }
+        out.uv = g.uv.slice();
         out.idx = g.idx.slice();
         return out;
     }
 
     function append(target, src) {
         const base = target.pos.length / 3;
-        for (let i = 0; i < src.pos.length; i++) { target.pos.push(src.pos[i]); target.nor.push(src.nor[i]); }
+        for (let i = 0; i < src.pos.length; i += 3) {
+            target.pos.push(src.pos[i], src.pos[i + 1], src.pos[i + 2]);
+            target.nor.push(src.nor[i], src.nor[i + 1], src.nor[i + 2]);
+            target.uv.push(src.uv[i / 3 * 2], src.uv[i / 3 * 2 + 1]);
+        }
         for (let i = 0; i < src.idx.length; i++) target.idx.push(src.idx[i] + base);
         return target;
     }
@@ -179,14 +159,15 @@ window.createMonoModel = function () {
     }
 
     /* ---- Quadric 2 : CYLINDER / CONE TERPOTONG (pusat di origin, memanjang di sumbu Y) ---- */
-    function cylinder(rTop, rBottom, h, radial, rows, caps) {
+    function cylinder(rTop, rBottom, h, radial, rows, caps, uvOffset) {
         const g = newGeo();
         const slope = (rBottom - rTop) / h;
         for (let r = 0; r <= rows; r++) {
             const v = r / rows, y = h / 2 - v * h, rad = rTop + (rBottom - rTop) * v;
             for (let j = 0; j <= radial; j++) {
                 const th = 2 * PI * j / radial, c = Math.cos(th), s = Math.sin(th);
-                pushVertex(g, [rad * c, y, rad * s], vNorm([c, slope, s]));
+                pushVertex(g, [rad * c, y, rad * s], vNorm([c, slope, s]),
+                    [j / radial + (uvOffset || 0), 1 - v]);
             }
         }
         linkGrid(g, 0, rows, radial);
@@ -203,6 +184,33 @@ window.createMonoModel = function () {
                 for (let j = 0; j < radial; j++) g.idx.push(centre, first + j, first + j + 1);
             });
         }
+        return orient(g);
+    }
+
+    function bezierConeProfile(profile, radial, rows, uvOffset) {
+        const g = newGeo();
+        for (let r = 0; r <= rows; r++) {
+            const t = r / rows;
+            const point = bezierPoint(profile[0], profile[1], profile[2], profile[3], t);
+            const tangent = bezierTangent(profile[0], profile[1], profile[2], profile[3], t);
+            for (let j = 0; j <= radial; j++) {
+                const angle = 2 * PI * j / radial, c = Math.cos(angle), s = Math.sin(angle);
+                pushVertex(g, [point[0] * c, point[1], point[0] * s],
+                    vNorm([tangent[1] * c, -tangent[0], tangent[1] * s]),
+                    [j / radial + (uvOffset || 0), t]);
+            }
+        }
+        linkGrid(g, 0, rows, radial);
+
+        [[profile[0][1], profile[0][0], -1], [profile[3][1], profile[3][0], 1]].forEach(cap => {
+            const centre = pushVertex(g, [0, cap[0], 0], [0, cap[2], 0]);
+            const first = g.pos.length / 3;
+            for (let j = 0; j <= radial; j++) {
+                const angle = 2 * PI * j / radial;
+                pushVertex(g, [cap[1] * Math.cos(angle), cap[0], cap[1] * Math.sin(angle)], [0, cap[2], 0]);
+            }
+            for (let j = 0; j < radial; j++) g.idx.push(centre, first + j, first + j + 1);
+        });
         return orient(g);
     }
 
@@ -262,10 +270,11 @@ window.createMonoModel = function () {
                 N = vNorm(vSub(N, vMul(T, vDot(N, T))));
             }
             const B = vCross(T, N);
+            const ringRadius = typeof radius === 'function' ? radius(t) : radius;
             for (let j = 0; j <= sides; j++) {
                 const a = 2 * PI * j / sides;
                 const dir = vAdd(vMul(N, Math.cos(a)), vMul(B, Math.sin(a)));
-                pushVertex(g, vAdd(C, vMul(dir, radius)), dir);
+                pushVertex(g, vAdd(C, vMul(dir, ringRadius)), dir);
             }
         }
         linkGrid(g, 0, segs, sides);
@@ -284,7 +293,7 @@ window.createMonoModel = function () {
             const k = Math.sqrt(1 + (y * y) / (v * v));
             for (let s = 0; s < sides; s++) {
                 const ang = 2 * PI * s / sides;
-                g.pos.push(a * k * Math.cos(ang), y, b * k * Math.sin(ang));
+                pushVertex(g, [a * k * Math.cos(ang), y, b * k * Math.sin(ang)], [0, 0, 0]);
             }
         }
         for (let r = 0; r < rings; r++) {
@@ -295,15 +304,23 @@ window.createMonoModel = function () {
                 g.idx.push(cur, up, nxt, nxt, up, upNxt);
             }
         }
-        // tutup bawah & atas dengan kipas segitiga
-        const bottom = g.pos.length / 3; g.pos.push(0, -half, 0);
-        const top = g.pos.length / 3;    g.pos.push(0, half, 0);
+        const bottom = pushVertex(g, [0, -half, 0], [0, -1, 0]);
+        const top = pushVertex(g, [0, half, 0], [0, 1, 0]);
         for (let s = 0; s < sides; s++) {
             const nxt = (s + 1) % sides;
             g.idx.push(bottom, nxt, s);
             g.idx.push(top, rings * sides + s, rings * sides + nxt);
         }
-        return smoothNormals(g);
+        const normals = [];
+        for (let r = 0; r <= rings; r++) {
+            const y = -half + (r / rings) * half * 2;
+            for (let s = 0; s < sides; s++) {
+                const ang = 2 * PI * s / sides;
+                normals.push(...vNorm([Math.cos(ang) / a, -y / (v * v), Math.sin(ang) / b]));
+            }
+        }
+        g.nor = normals.concat([0, -1, 0, 0, 1, 0]);
+        return orient(g);
     }
 
     /* ---- EXTRUDE : bentuk 2D dari kurva Bezier -> diberi ketebalan + bevel ---- */
@@ -405,31 +422,164 @@ window.createMonoModel = function () {
     /* ==========================================================
      *  BAGIAN 4 : MATERIAL & PENGUMPUL MESH
      * ========================================================== */
+    const coatCanvas = document.createElement('canvas');
+    coatCanvas.width = 512;
+    coatCanvas.height = 512;
+    const coatContext = coatCanvas.getContext('2d');
+    if (!coatContext) throw new Error('Tidak dapat membuat tekstur kain Mono.');
+    const coatGradient = coatContext.createLinearGradient(0, 0, 0, 512);
+    coatGradient.addColorStop(0, '#5d5957');
+    coatGradient.addColorStop(0.5, '#55514f');
+    coatGradient.addColorStop(1, '#4d4947');
+    coatContext.fillStyle = coatGradient;
+    coatContext.fillRect(0, 0, 512, 512);
+
+    let textureSeed = 17;
+    const textureRandom = () => {
+        textureSeed = (textureSeed * 1664525 + 1013904223) >>> 0;
+        return textureSeed / 4294967296;
+    };
+    for (let i = 0; i < 5200; i++) {
+        const shade = 175 + Math.floor(textureRandom() * 55);
+        coatContext.fillStyle = `rgba(${shade}, ${shade}, ${shade}, 0.12)`;
+        coatContext.fillRect(textureRandom() * 512, textureRandom() * 512, 1, 3);
+    }
+
+    coatContext.save();
+    coatContext.beginPath();
+    coatContext.rect(112, 0, 288, 512);
+    coatContext.clip();
+
+    const shirtGradient = coatContext.createLinearGradient(0, 150, 0, 512);
+    shirtGradient.addColorStop(0, '#77747a');
+    shirtGradient.addColorStop(1, '#5d5a61');
+    coatContext.fillStyle = shirtGradient;
+    coatContext.beginPath();
+    coatContext.moveTo(208, 142);
+    coatContext.quadraticCurveTo(256, 170, 304, 142);
+    coatContext.lineTo(366, 512);
+    coatContext.lineTo(146, 512);
+    coatContext.closePath();
+    coatContext.fill();
+
+    const coatPanel = coatContext.createLinearGradient(70, 0, 440, 0);
+    coatPanel.addColorStop(0, '#817d79');
+    coatPanel.addColorStop(0.5, '#74706d');
+    coatPanel.addColorStop(1, '#625f5e');
+    coatContext.fillStyle = coatPanel;
+    coatContext.beginPath();
+    coatContext.moveTo(174, -8);
+    coatContext.bezierCurveTo(130, 88, 112, 208, 72, 420);
+    coatContext.quadraticCurveTo(82, 466, 116, 490);
+    coatContext.bezierCurveTo(154, 410, 188, 300, 228, 213);
+    coatContext.bezierCurveTo(204, 148, 181, 74, 174, -8);
+    coatContext.closePath();
+    coatContext.fill();
+    coatContext.beginPath();
+    coatContext.moveTo(338, -8);
+    coatContext.bezierCurveTo(382, 88, 400, 208, 440, 420);
+    coatContext.quadraticCurveTo(430, 466, 396, 490);
+    coatContext.bezierCurveTo(358, 410, 324, 300, 284, 213);
+    coatContext.bezierCurveTo(308, 148, 331, 74, 338, -8);
+    coatContext.closePath();
+    coatContext.fill();
+
+    const lapelGradient = coatContext.createLinearGradient(100, 0, 260, 260);
+    lapelGradient.addColorStop(0, '#8d8882');
+    lapelGradient.addColorStop(0.55, '#7b756f');
+    lapelGradient.addColorStop(1, '#67625e');
+    coatContext.fillStyle = lapelGradient;
+    coatContext.beginPath();
+    coatContext.moveTo(204, -4);
+    coatContext.bezierCurveTo(201, 72, 183, 142, 164, 213);
+    coatContext.bezierCurveTo(140, 296, 118, 390, 95, 470);
+    coatContext.quadraticCurveTo(113, 482, 134, 488);
+    coatContext.bezierCurveTo(174, 390, 211, 284, 238, 205);
+    coatContext.bezierCurveTo(221, 130, 208, 54, 204, -4);
+    coatContext.closePath();
+    coatContext.fill();
+    coatContext.beginPath();
+    coatContext.moveTo(308, -4);
+    coatContext.bezierCurveTo(311, 72, 329, 142, 348, 213);
+    coatContext.bezierCurveTo(372, 296, 394, 390, 417, 470);
+    coatContext.quadraticCurveTo(399, 482, 378, 488);
+    coatContext.bezierCurveTo(338, 390, 301, 284, 274, 205);
+    coatContext.bezierCurveTo(291, 130, 304, 54, 308, -4);
+    coatContext.closePath();
+    coatContext.fill();
+
+    coatContext.strokeStyle = 'rgba(35, 33, 33, 0.65)';
+    coatContext.lineWidth = 6;
+    coatContext.beginPath();
+    coatContext.moveTo(204, 0);
+    coatContext.bezierCurveTo(201, 82, 181, 149, 164, 213);
+    coatContext.bezierCurveTo(140, 296, 118, 390, 112, 477);
+    coatContext.moveTo(308, 0);
+    coatContext.bezierCurveTo(311, 82, 331, 149, 348, 213);
+    coatContext.bezierCurveTo(372, 296, 394, 390, 400, 477);
+    coatContext.stroke();
+
+    coatContext.strokeStyle = 'rgba(190, 184, 176, 0.35)';
+    coatContext.lineWidth = 3;
+    coatContext.beginPath();
+    coatContext.moveTo(212, 6);
+    coatContext.bezierCurveTo(207, 82, 188, 148, 172, 213);
+    coatContext.bezierCurveTo(150, 296, 128, 390, 120, 477);
+    coatContext.moveTo(300, 6);
+    coatContext.bezierCurveTo(305, 82, 324, 148, 340, 213);
+    coatContext.bezierCurveTo(362, 296, 384, 390, 392, 477);
+    coatContext.stroke();
+
+    coatContext.strokeStyle = 'rgba(214, 207, 197, 0.18)';
+    coatContext.lineWidth = 2;
+    [
+        [104, 254, 145, 364],
+        [390, 248, 352, 354],
+        [138, 344, 112, 443],
+        [371, 338, 400, 446]
+    ].forEach(([x1, y1, x2, y2]) => {
+        coatContext.beginPath();
+        coatContext.moveTo(x1, y1);
+        coatContext.quadraticCurveTo((x1 + x2) / 2 + 10, (y1 + y2) / 2, x2, y2);
+        coatContext.stroke();
+    });
+
+    coatContext.fillStyle = '#b7a998';
+    coatContext.beginPath();
+    coatContext.arc(256, 176, 10, 0, 2 * PI);
+    coatContext.fill();
+    coatContext.fillStyle = '#59534e';
+    coatContext.beginPath();
+    coatContext.arc(256, 176, 4, 0, 2 * PI);
+    coatContext.fill();
+    coatContext.restore();
+
+    const coatTexture = new THREE.CanvasTexture(coatCanvas);
+    coatTexture.wrapS = THREE.RepeatWrapping;
+    coatTexture.wrapT = THREE.RepeatWrapping;
+    coatTexture.encoding = THREE.sRGBEncoding;
     const mats = {
-        coat:     new THREE.MeshStandardMaterial({ color: 0x24232b, roughness: 0.96 }),
-        coatEdge: new THREE.MeshStandardMaterial({ color: 0x45434a, roughness: 1 }),
+        coat:     new THREE.MeshStandardMaterial({ color: 0xffffff, map: coatTexture, roughness: 1 }),
+        cape:     new THREE.MeshStandardMaterial({ color: 0x222033, roughness: 1 }),
         inner:    new THREE.MeshStandardMaterial({ color: 0x17171d, roughness: 1 }),
-        cloth:    new THREE.MeshStandardMaterial({ color: 0x484646, roughness: 1 }),
-        bag:      new THREE.MeshStandardMaterial({ color: 0x514b47, roughness: 1 }),
-        bagLight: new THREE.MeshStandardMaterial({ color: 0x6a6059, roughness: 1 }),
+        cloth:    new THREE.MeshStandardMaterial({ color: 0x34343c, roughness: 1 }),
+        bag:      new THREE.MeshStandardMaterial({ color: 0x625b57, roughness: 1 }),
+        head:     new THREE.MeshStandardMaterial({ color: 0x393437, roughness: 1 }),
         eye:      new THREE.MeshBasicMaterial({ color: 0x080916 }),
-        skin:     new THREE.MeshStandardMaterial({ color: 0x47413e, roughness: 1 }),
-        button:   new THREE.MeshStandardMaterial({ color: 0x948b7e, roughness: 0.8 })
+        skin:     new THREE.MeshStandardMaterial({ color: 0x514b49, roughness: 1 })
     };
     Object.keys(mats).forEach(k => { mats[k].side = THREE.DoubleSide; });
 
     // satu slot = satu mesh akhir (geometri bermaterial sama digabung)
     const slots = {
-        cape:     { mat: 'coat', shadow: true },
+        cape:     { mat: 'cape', shadow: true },
         coat:     { mat: 'coat' },
-        coatEdge: { mat: 'coatEdge' },
         inner:    { mat: 'inner' },
         cloth:    { mat: 'cloth' },
         bagHead:  { mat: 'bag', shadow: true },
-        bagLight: { mat: 'bagLight' },
+        head:     { mat: 'head' },
         eye:      { mat: 'eye' },
-        skin:     { mat: 'skin' },
-        button:   { mat: 'button' }
+        skin:     { mat: 'skin' }
     };
     const pieces = {};
     function put(slot, geo) {
@@ -443,76 +593,58 @@ window.createMonoModel = function () {
 
     // --- jubah belakang + badan ---
     put('cape', place(extrudedCape(), { pos: [0, 0, -0.28] }));
-    put('coat',  place(cylinder(0.28, 0.53, 1.18, 24, 4), { pos: [0, 1.38, 0.02] }));
-    put('inner', place(cylinder(0.22, 0.34, 0.82, 18, 2), { pos: [0, 1.43, 0.19] }));
-    put('cloth', place(cylinder(0.15, 0.18, 0.28, 12, 1), { pos: [0, 2.02, 0] }));
+    put('coat', bezierConeProfile([
+        [0.48, 0.78, 0], [0.43, 0.9, 0], [0.3, 1.65, 0], [0.28, 2.03, 0]
+    ], 48, 32, 0.25));
 
-    // --- lapel (kurva Bezier) ---
-    put('coatEdge', bezierTube([-0.29, 1.89, 0.31], [-0.23, 1.61, 0.43], [-0.1, 1.42, 0.47], [0.02, 1.19, 0.48], 0.035, 24));
-    put('coatEdge', bezierTube([0.29, 1.89, 0.31], [0.23, 1.61, 0.43], [0.1, 1.42, 0.47], [-0.02, 1.19, 0.48], 0.035, 24));
+    // --- paper bag frustum; hyperboloid head stays inside the paper shell ---
+    put('bagHead', place(cylinder(0.43, 0.39, 1.08, 32, 1), { pos: [0, 2.57, 0], scale: [1, 1, 0.88] }));
+    put('head', place(hyperboloidHead(), { pos: [0, 2.57, 0], scale: [0.72, 0.82, 0.72] }));
 
-    // --- kancing (ellipsoid pipih) ---
+    // --- dua mata kecil berbentuk bola pada sisi depan paper bag ---
     [-1, 1].forEach(side => {
-        [1.65, 1.35, 1.05].forEach(y => {
-            put('button', place(ellipsoid(0.035, 0.035, 0.035 * 0.45, 8, 10), { pos: [side * 0.19, y, 0.42] }));
-        });
+        put('eye', place(ellipsoid(0.085, 0.085, 0.085, 24, 16), { pos: [side * 0.15, 2.56, 0.39] }));
     });
 
-    // --- kepala kantong kertas (hyperboloid) + lipatan ---
-    put('bagHead', place(hyperboloidHead(), { pos: [0, 2.57, 0], scale: [1.12, 1, 1.06] }));
-    put('bagLight', bezierTube([-0.35, 3.03, 0.16], [-0.19, 3.12, 0.25], [0.17, 3.1, 0.25], [0.36, 3.02, 0.16], 0.018, 24));
-    put('bagLight', bezierTube([-0.39, 2.24, 0.21], [-0.33, 2.37, 0.29], [-0.34, 2.77, 0.29], [-0.39, 2.96, 0.2], 0.009, 20));
-    put('coatEdge', bezierTube([0.39, 2.24, 0.21], [0.33, 2.42, 0.29], [0.36, 2.76, 0.28], [0.4, 2.96, 0.2], 0.009, 20));
-
-    // --- dua mata (ellipsoid pipih) ---
-    [-1, 1].forEach(side => {
-        put('eye', place(ellipsoid(0.092, 0.092, 0.092 * 0.28, 12, 16), { pos: [side * 0.15, 2.56, 0.359] }));
-    });
-
-    // --- lengan panjang + manset + tangan ---
-    const arms = [
-        { side: -1, shoulder: [-0.34, 1.84, 0.02], elbow1: [-0.49, 1.56, 0.08], elbow2: [-0.68, 1.14, 0.15], wrist: [-0.91, 0.83, 0.2] },
-        { side:  1, shoulder: [0.34, 1.84, 0.02],  elbow1: [0.49, 1.56, 0.08],  elbow2: [0.68, 1.14, 0.15],  wrist: [0.91, 0.83, 0.2] }
-    ];
-    arms.forEach(arm => {
-        const s = arm.side, w = arm.wrist;
-
-        put('cloth', bezierTube(arm.shoulder, arm.elbow1, arm.elbow2, w, 0.13, 44));
-
-        put('coatEdge', cylinderBetween([w[0] - s * 0.07, w[1], w[2]], [w[0] + s * 0.07, w[1], w[2]], 0.14, 8));
-
-        const palm = [w[0] + s * 0.075, w[1] - 0.11, w[2] + 0.02];
+    // --- lengan kurva Bezier + telapak ellipsoid dan jari sapuan Bezier ---
+    [
+        [[-0.36, 1.9, 0.02], [-0.58, 1.78, 0.06], [-0.78, 1.2, 0.14], [-0.91, 0.83, 0.2]],
+        [[0.36, 1.9, 0.02], [0.58, 1.78, 0.06], [0.78, 1.2, 0.14], [0.91, 0.83, 0.2]]
+    ].forEach(points => {
+        put('cloth', bezierTube(points[0], points[1], points[2], points[3], 0.12, 32, 12));
+        const side = points[0][0] < 0 ? -1 : 1;
+        const w = points[3];
+        const palm = [w[0] + side * 0.075, w[1] - 0.11, w[2] + 0.02];
         put('skin', place(ellipsoid(0.11, 0.16, 0.075, 10, 14), { pos: palm }));
 
         for (let f = 0; f < 3; f++) {
-            const dy = 0.035 - f * 0.05;
-            const a = [palm[0] + s * 0.035, palm[1] - 0.015 + dy, palm[2] + 0.035];
-            const d = [a[0] + s * (0.13 - f * 0.015), a[1] - 0.09 + f * 0.035, a[2] + 0.005];
+            const fingerX = palm[0] + side * (f - 1) * 0.045;
+            const a = [fingerX, palm[1] - 0.015, palm[2] + 0.035];
+            const d = [fingerX + side * (0.1 - f * 0.018), palm[1] - 0.09 + f * 0.025, palm[2] + 0.06];
             put('skin', bezierTube(
                 a,
-                [a[0] + s * 0.045, a[1] - 0.025, a[2] + 0.02],
-                [d[0] - s * 0.035, d[1] - 0.015, d[2] + 0.015],
-                d, 0.018, 12));
+                [a[0] + side * 0.035, a[1] - 0.025, a[2] + 0.02],
+                [d[0] - side * 0.025, d[1] - 0.015, d[2] + 0.015],
+                d, 0.014, 12));
         }
     });
 
-    // --- kaki celana pendek + cincin + telapak kaki + jari kaki ---
+    // --- kaki silinder pendek; telapak dan jari mengikuti kurva Bezier ---
     [-1, 1].forEach((side, index) => {
         const x = side * 0.19;
         const left = index === 0;
-        const bottom = left ? 0.22 : 0.18;
+        const fx = x + (left ? -0.035 : 0.035);
 
-        put('inner', cylinderBetween([x, 0.94, 0.06], [x + (left ? -0.03 : 0.03), bottom, 0.08], 0.13, 10));
-        put('coatEdge', place(torus(0.115, 0.025, 6, 14), { pos: [x, 0.29, 0.08], rot: [PI / 2, 0, 0] }));
-
-        const fx = x + (left ? -0.04 : 0.04);
-        put('skin', place(ellipsoid(0.17, 0.095, 0.29, 12, 16), { pos: [fx, 0.12, 0.22] }));
+        put('inner', place(cylinder(0.13, 0.13, 0.7, 16, 2), { pos: [x, 0.59, 0.07] }));
+        put('skin', bezierTube(
+            [fx, 0, -0.12], [fx, -0.075, 0.06], [fx, -0.065, 0.34], [fx, 0, 0.49],
+            t => 0.012 + 0.105 * Math.pow(Math.sin(PI * t), 0.65), 24, 12));
 
         for (let t = 0; t < 3; t++) {
             const tx = fx + (t - 1) * 0.065;
             put('skin', bezierTube(
                 [tx, 0.105, 0.39], [tx, 0.09, 0.43], [tx, 0.085, 0.47],
-                [tx, 0.09, 0.49 - Math.abs(t - 1) * 0.025], 0.018, 10));
+                [tx, 0.09, 0.49 - Math.abs(t - 1) * 0.025], 0.012, 10));
         }
     });
 
@@ -525,11 +657,22 @@ window.createMonoModel = function () {
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute('position', new THREE.Float32BufferAttribute(g.pos, 3));
         geometry.setAttribute('normal', new THREE.Float32BufferAttribute(g.nor, 3));
+        geometry.setAttribute('uv', new THREE.Float32BufferAttribute(g.uv, 2));
         geometry.setIndex(g.idx);
         const mesh = new THREE.Mesh(geometry, mats[slots[name].mat]);
         mesh.name = 'mono_' + name;
         mesh.castShadow = !!slots[name].shadow;
-        character.add(mesh);
+        if (name === 'cape') {
+            const pivot = new THREE.Group();
+            pivot.name = 'mono_cape_pivot';
+            pivot.position.set(0, 1.9, 0.12);
+            pivot.rotation.x = 0.12;
+            mesh.position.y = -1.9;
+            pivot.add(mesh);
+            character.add(pivot);
+        } else {
+            character.add(mesh);
+        }
     });
 
     return character;
