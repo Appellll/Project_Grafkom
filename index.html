@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Little Nightmares - Shared Character Scene</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #171a1f;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #e8e6dc; }
+    #mycanvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+    #mycanvas:active { cursor: grabbing; }
+    .panel { position: absolute; left: 14px; top: 14px; z-index: 2; padding: 10px 12px; border-radius: 12px;
+      background: rgba(20, 22, 26, .78); backdrop-filter: blur(6px); border: 1px solid rgba(255,255,255,.08);
+      display: flex; align-items: center; gap: 12px; max-width: calc(100% - 52px); font-size: 13px; line-height: 1.45; }
+    .panel h1 { margin: 0; font-size: 16px; color: #e6c92a; white-space: nowrap; }
+    .panel p { margin: 0; opacity: .75; white-space: nowrap; }
+    .btns { display: flex; flex-wrap: wrap; gap: 6px; }
+    button { font: inherit; font-size: 12px; padding: 6px 10px; border-radius: 8px; cursor: pointer;
+      color: #e8e6dc; background: #2a2e35; border: 1px solid #3a3f48; }
+    button:hover { background: #343944; }
+    button.on { background: #e6c92a; color: #1b1b12; border-color: #e6c92a; }
+    .meta { font-size: 11.5px; opacity: .6; white-space: nowrap; }
+    #loading { position: fixed; z-index: 5; inset: 0; display: flex; align-items: center; justify-content: center;
+      background: #171a1f; font-size: 15px; letter-spacing: .03em; }
+    @media (max-width: 760px) {
+      .panel { right: 10px; left: 10px; top: 8px; max-width: none; flex-wrap: wrap; gap: 6px 10px; }
+      .panel p, .meta { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h1>Little Nightmares</h1>
+    <p>Six, Mono &amp; Janitor</p>
+    <div class="btns">
+      <button id="btnRotate">Putar otomatis</button>
+      <button id="btnWire">Wireframe</button>
+      <button id="btnIdle">Tes hierarki</button>
+      <button id="btnReset">Reset kamera</button>
+    </div>
+    <div class="meta">Drag = putar &middot; Scroll = zoom &middot; Segitiga: <span id="triCount">-</span></div>
+  </div>
+
+  <canvas id="mycanvas"></canvas>
+
+  <div id="loading">Menyiapkan scene karakter&hellip;</div>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+  <script src="libs.js"></script>
+  <script src="csg.js"></script>
+  <script src="Primitives.js"></script>
+  <script src="Char/six.js"></script>
+  <script src="Char/MyObject.js"></script>
+  <script src="Char/Mono.js"></script>
+  <script src="Char/Janitor.js"></script>
+  <script src="Char/janitor-adapter.js"></script>
+  <script src="Char/combined.js"></script>
+  <script>
+    // beri browser kesempatan menampilkan overlay "loading" sebelum CSG yang berat berjalan
+    window.addEventListener('load', function () {
+      setTimeout(function () {
+        try {
+          initSharedScene();
+        } catch (error) {
+          console.error(error);
+          document.getElementById('loading').textContent = 'Gagal memuat scene: ' + error.message;
+        }
+      }, 40);
+    });
+  </script>
+</body>
+</html>
