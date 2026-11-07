@@ -582,9 +582,11 @@ window.createMonoModel = function () {
         skin:     { mat: 'skin' }
     };
     const pieces = {};
-    function put(slot, geo) {
-        if (!pieces[slot]) pieces[slot] = newGeo();
-        append(pieces[slot], geo);
+    // part = bagian tubuh yang bisa digerakkan (torso, head, armP, armN, legP, legN)
+    function put(slot, geo, part) {
+        const key = (part || 'torso') + '|' + slot;
+        if (!pieces[key]) pieces[key] = newGeo();
+        append(pieces[key], geo);
     }
 
     /* ==========================================================
@@ -598,12 +600,12 @@ window.createMonoModel = function () {
     ], 48, 32, 0.25));
 
     // --- paper bag frustum; hyperboloid head stays inside the paper shell ---
-    put('bagHead', place(cylinder(0.43, 0.39, 1.08, 32, 1), { pos: [0, 2.57, 0], scale: [1, 1, 0.88] }));
-    put('head', place(hyperboloidHead(), { pos: [0, 2.57, 0], scale: [0.72, 0.82, 0.72] }));
+    put('bagHead', place(cylinder(0.43, 0.39, 1.08, 32, 1), { pos: [0, 2.57, 0], scale: [1, 1, 0.88] }), 'head');
+    put('head', place(hyperboloidHead(), { pos: [0, 2.57, 0], scale: [0.72, 0.82, 0.72] }), 'head');
 
     // --- dua mata kecil berbentuk bola pada sisi depan paper bag ---
     [-1, 1].forEach(side => {
-        put('eye', place(ellipsoid(0.085, 0.085, 0.085, 24, 16), { pos: [side * 0.15, 2.56, 0.39] }));
+        put('eye', place(ellipsoid(0.085, 0.085, 0.085, 24, 16), { pos: [side * 0.15, 2.56, 0.39] }), 'head');
     });
 
     // --- lengan kurva Bezier + telapak ellipsoid dan jari sapuan Bezier ---
@@ -611,11 +613,12 @@ window.createMonoModel = function () {
         [[-0.36, 1.9, 0.02], [-0.58, 1.78, 0.06], [-0.78, 1.2, 0.14], [-0.91, 0.83, 0.2]],
         [[0.36, 1.9, 0.02], [0.58, 1.78, 0.06], [0.78, 1.2, 0.14], [0.91, 0.83, 0.2]]
     ].forEach(points => {
-        put('cloth', bezierTube(points[0], points[1], points[2], points[3], 0.12, 32, 12));
         const side = points[0][0] < 0 ? -1 : 1;
+        const armPart = side < 0 ? 'armN' : 'armP';
+        put('cloth', bezierTube(points[0], points[1], points[2], points[3], 0.12, 32, 12), armPart);
         const w = points[3];
         const palm = [w[0] + side * 0.075, w[1] - 0.11, w[2] + 0.02];
-        put('skin', place(ellipsoid(0.11, 0.16, 0.075, 10, 14), { pos: palm }));
+        put('skin', place(ellipsoid(0.11, 0.16, 0.075, 10, 14), { pos: palm }), armPart);
 
         for (let f = 0; f < 3; f++) {
             const fingerX = palm[0] + side * (f - 1) * 0.045;
@@ -625,7 +628,7 @@ window.createMonoModel = function () {
                 a,
                 [a[0] + side * 0.035, a[1] - 0.025, a[2] + 0.02],
                 [d[0] - side * 0.025, d[1] - 0.015, d[2] + 0.015],
-                d, 0.014, 12));
+                d, 0.014, 12), armPart);
         }
     });
 
@@ -635,33 +638,59 @@ window.createMonoModel = function () {
         const left = index === 0;
         const fx = x + (left ? -0.035 : 0.035);
 
-        put('inner', place(cylinder(0.13, 0.13, 0.7, 16, 2), { pos: [x, 0.59, 0.07] }));
+        const legPart = side < 0 ? 'legN' : 'legP';
+        put('inner', place(cylinder(0.13, 0.13, 0.7, 16, 2), { pos: [x, 0.59, 0.07] }), legPart);
         put('skin', bezierTube(
             [fx, 0, -0.12], [fx, -0.075, 0.06], [fx, -0.065, 0.34], [fx, 0, 0.49],
-            t => 0.012 + 0.105 * Math.pow(Math.sin(PI * t), 0.65), 24, 12));
+            t => 0.012 + 0.105 * Math.pow(Math.sin(PI * t), 0.65), 24, 12), legPart);
 
         for (let t = 0; t < 3; t++) {
             const tx = fx + (t - 1) * 0.065;
             put('skin', bezierTube(
                 [tx, 0.105, 0.39], [tx, 0.09, 0.43], [tx, 0.085, 0.47],
-                [tx, 0.09, 0.49 - Math.abs(t - 1) * 0.025], 0.012, 10));
+                [tx, 0.09, 0.49 - Math.abs(t - 1) * 0.025], 0.012, 10), legPart);
         }
     });
 
     /* ==========================================================
      *  BAGIAN 6 : BUNGKUS KE THREE.JS
      * ========================================================== */
-    Object.keys(slots).forEach(name => {
-        const g = pieces[name];
-        if (!g) return;
+    // pivot (sendi) tiap bagian, koordinat model Mono
+    const PIVOT = {
+        torso: [0, 0, 0],
+        head:  [0, 2.1, 0],
+        armP:  [0.36, 1.9, 0.02],
+        armN:  [-0.36, 1.9, 0.02],
+        legP:  [0.19, 0.9, 0.07],
+        legN:  [-0.19, 0.9, 0.07]
+    };
+    const hips = new THREE.Group();          // badan atas: torso + kepala + lengan (bisa naik-turun)
+    hips.name = 'mono_hips';
+    character.add(hips);
+    const parts = { hips: hips };
+    Object.keys(PIVOT).forEach(p => {
+        if (p === 'torso') { parts.torso = hips; return; }
+        const g = new THREE.Group();
+        g.name = 'mono_' + p;
+        g.position.set(PIVOT[p][0], PIVOT[p][1], PIVOT[p][2]);
+        (p.indexOf('leg') === 0 ? character : hips).add(g);
+        parts[p] = g;
+    });
+    parts.legBase = { legP: PIVOT.legP.slice(), legN: PIVOT.legN.slice() };
+
+    Object.keys(pieces).forEach(key => {
+        const part = key.split('|')[0], name = key.split('|')[1];
+        const g = pieces[key];
+        const pv = PIVOT[part];
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute('position', new THREE.Float32BufferAttribute(g.pos, 3));
         geometry.setAttribute('normal', new THREE.Float32BufferAttribute(g.nor, 3));
         geometry.setAttribute('uv', new THREE.Float32BufferAttribute(g.uv, 2));
         geometry.setIndex(g.idx);
+        if (part !== 'torso') geometry.translate(-pv[0], -pv[1], -pv[2]);
         const mesh = new THREE.Mesh(geometry, mats[slots[name].mat]);
-        mesh.name = 'mono_' + name;
-        mesh.castShadow = !!slots[name].shadow;
+        mesh.name = 'mono_' + part + '_' + name;
+        mesh.castShadow = true;
         if (name === 'cape') {
             const pivot = new THREE.Group();
             pivot.name = 'mono_cape_pivot';
@@ -669,11 +698,13 @@ window.createMonoModel = function () {
             pivot.rotation.x = 0.12;
             mesh.position.y = -1.9;
             pivot.add(mesh);
-            character.add(pivot);
+            hips.add(pivot);
+            parts.cape = pivot;
         } else {
-            character.add(mesh);
+            parts[part].add(mesh);
         }
     });
+    character.userData.rig = parts;
 
     return character;
 };

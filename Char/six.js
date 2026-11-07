@@ -408,11 +408,13 @@ window.createSixModel = function () {
   var source = buildScene();
   var group = new THREE.Group();
   var triangleCount = 0;
+  var groups = {};
 
   function addNode(node, parent) {
     var container = new THREE.Group();
     container.matrixAutoUpdate = false;
     container.matrix.fromArray(node.local());
+    groups[node.name] = container;
     parent.add(container);
 
     if (node.soup) {
@@ -433,7 +435,33 @@ window.createSixModel = function () {
   }
 
   addNode(source.root, group);
-  return { group: group, triangleCount: triangleCount };
+
+  /* ---- RIG: dipakai Anim.js untuk menggerakkan anggota badan ----
+   * nodes.<nama>.t / .r diubah tiap frame, lalu rig.sync() menyalin ke Three.js.
+   * rig.reset() mengembalikan semua node ke pose awal.            */
+  var animated = ['six', 'head', 'hood', 'armL', 'armR', 'legL', 'legR'];
+  var nodeOf = { six: source.root, head: source.nodes.head, hood: source.nodes.hood,
+    armL: source.nodes.armL, armR: source.nodes.armR, legL: source.nodes.legL, legR: source.nodes.legR };
+  var rig = {
+    nodes: nodeOf,
+    groups: groups,
+    reset: function () {
+      animated.forEach(function (k) {
+        var n = nodeOf[k];
+        n.t = n.base.t.slice();
+        n.r = n.base.r.slice();
+        n.s = [1, 1, 1];
+      });
+      source.root.t = [0, 0, 0]; source.root.r = [0, 0, 0];
+    },
+    sync: function () {
+      animated.forEach(function (k) {
+        groups[k].matrix.fromArray(nodeOf[k].local());
+        groups[k].matrixWorldNeedsUpdate = true;
+      });
+    }
+  };
+  return { group: group, triangleCount: triangleCount, rig: rig };
 };
 
 /* =========================================================

@@ -713,11 +713,13 @@ var Janitor = (function () {
 window.createJanitorModel = function () {
   var janitor = Janitor.create(null);
   var character = new THREE.Group();
+  var groups = {};
 
   function addNode(node, parent) {
     var group = new THREE.Group();
     group.matrixAutoUpdate = false;
     group.matrix.fromArray(node.local());
+    groups[node.name] = group;
     parent.add(group);
 
     if (node.mesh) {
@@ -738,6 +740,32 @@ window.createJanitorModel = function () {
 
   addNode(janitor.root, character);
   window.janitor = janitor;
+
+  /* ---- RIG untuk Anim.js ---- */
+  var names = ['root', 'body', 'head', 'hat', 'legL', 'legR'];
+  var rest = {};
+  names.forEach(function (k) {
+    var n = janitor.nodes[k];
+    rest[k] = { p: n.position.slice(), r: n.rotation.slice(), s: n.scale.slice() };
+  });
+  character.userData.rig = {
+    nodes: janitor.nodes,
+    groups: groups,
+    reset: function () {
+      names.forEach(function (k) {
+        var n = janitor.nodes[k];
+        n.position = rest[k].p.slice();
+        n.rotation = rest[k].r.slice();
+        n.scale = rest[k].s.slice();
+      });
+    },
+    sync: function () {
+      names.forEach(function (k) {
+        groups[k].matrix.fromArray(janitor.nodes[k].local());
+        groups[k].matrixWorldNeedsUpdate = true;
+      });
+    }
+  };
   return character;
 };
 
