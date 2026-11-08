@@ -1,7 +1,3 @@
-/* =========================================================
- *  main.js - inisialisasi WebGL mentah, UI, dan loop utama
- *  (tanpa three.js; matriks dari libs.js)
- * ========================================================= */
 function initScene() {
   var canvas = document.getElementById('mycanvas');
   var R = window.createRenderer(canvas);
@@ -17,7 +13,8 @@ function initScene() {
   function fmt(s) { var m = Math.floor(s / 60), x = Math.floor(s % 60); return m + ':' + (x < 10 ? '0' : '') + x; }
   function setPlaying(p) { playing = p; $('btnPlay').textContent = p ? 'Jeda' : (t >= DUR ? 'Putar ulang' : 'Putar'); if (p) sfx.resume(); else sfx.suspend(); }
   function seek(v) { t = Math.max(0, Math.min(DUR, v)); anim.resetAudioClock(t); sfx.reset(); }
-  window.__seek = seek; window.__setPlaying = setPlaying;      // untuk debugging
+  var camOverride = null;
+  window.__seek = seek; window.__setPlaying = setPlaying; window.__cam = function (o) { camOverride = o; };   // untuk debugging
 
   $('startBtn').addEventListener('click', function () { sfx.unlock(); $('startCard').style.display = 'none'; seek(0); setPlaying(true); });
   $('btnPlay').addEventListener('click', function () { if (t >= DUR) seek(0); setPlaying(!playing); });
@@ -57,6 +54,7 @@ function initScene() {
       eye = [target[0] + dist * cp * Math.sin(yaw), target[1] + dist * Math.sin(pitch), target[2] + dist * cp * Math.cos(yaw)]; look = target; fov = 45;
       $('shot').textContent = 'Kamera bebas';
     } else { eye = r.cam.eye; look = r.cam.look; fov = r.cam.fov; $('shot').textContent = r.cam.shot.name; }
+    if (camOverride) { eye = camOverride.eye; look = camOverride.look; fov = camOverride.fov || 40; }
     var view = LIBS.lookAt(eye, look, [0, 1, 0]);
     var proj = LIBS.perspective(fov * Math.PI / 180, canvas.width / canvas.height, 0.1, 80);
     anim.render(view, proj, eye, exposure, t);

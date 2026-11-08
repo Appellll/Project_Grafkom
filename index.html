@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Little Nightmares</title>
+  <title>Little Nightmares - The Maw (WebGL)</title>
   <style>
     html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; color: #e8e6dc;
       font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -19,6 +19,9 @@
     #tText { font-family: Georgia, serif; font-size: clamp(28px, 5vw, 56px); margin-top: 6px; color: #efe6cf; }
     #caption { position: fixed; left: 8%; right: 8%; bottom: 11%; text-align: center; z-index: 5; font-size: clamp(14px, 1.7vw, 20px);
       text-shadow: 0 1px 8px #000, 0 0 3px #000; opacity: 0; transition: opacity .4s; pointer-events: none; }
+      
+    #titleCard, #caption { display: none !important; }
+    
     .panel { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; padding: 8px 14px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
       background: linear-gradient(transparent, rgba(0,0,0,.75)); font-size: 12px; }
     .panel input[type=range] { accent-color: #c9a24a; }

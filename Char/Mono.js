@@ -186,79 +186,27 @@ window.createMonoModel = function () {
         return orient(g);
     }
 
-    // wobble(angle, t) -> faktor radius (lipatan/kerutan kain); bila ada, normal dihitung numerik dari permukaan
-    function bezierConeProfile(profile, radial, rows, uvOffset, wobble) {
+    function bezierConeProfile(profile, radial, rows, uvOffset) {
         const g = newGeo();
-        const P = (angle, t) => {
-            const pt = bezierPoint(profile[0], profile[1], profile[2], profile[3], t);
-            const k = pt[0] * (1 + wobble(angle, t));
-            return [k * Math.cos(angle), pt[1], k * Math.sin(angle)];
-        };
         for (let r = 0; r <= rows; r++) {
             const t = r / rows;
             const point = bezierPoint(profile[0], profile[1], profile[2], profile[3], t);
             const tangent = bezierTangent(profile[0], profile[1], profile[2], profile[3], t);
             for (let j = 0; j <= radial; j++) {
                 const angle = 2 * PI * j / radial, c = Math.cos(angle), s = Math.sin(angle);
-                if (!wobble) {
-                    pushVertex(g, [point[0] * c, point[1], point[0] * s],
-                        vNorm([tangent[1] * c, -tangent[0], tangent[1] * s]),
-                        [j / radial + (uvOffset || 0), t]);
-                } else {
-                    const e = 1e-3;
-                    const da = vSub(P(angle + e, t), P(angle - e, t));
-                    const dt = vSub(P(angle, Math.min(1, t + e)), P(angle, Math.max(0, t - e)));
-                    let n = vNorm(vCross(da, dt));
-                    if (n[0] * c + n[2] * s < 0) n = vMul(n, -1);                 // pastikan menghadap keluar
-                    pushVertex(g, P(angle, t), n, [j / radial + (uvOffset || 0), t]);
-                }
+                pushVertex(g, [point[0] * c, point[1], point[0] * s],
+                    vNorm([tangent[1] * c, -tangent[0], tangent[1] * s]),
+                    [j / radial + (uvOffset || 0), t]);
             }
         }
         linkGrid(g, 0, rows, radial);
 
-        [[profile[0][1], profile[0][0], -1, 0], [profile[3][1], profile[3][0], 1, 1]].forEach(cap => {
+        [[profile[0][1], profile[0][0], -1], [profile[3][1], profile[3][0], 1]].forEach(cap => {
             const centre = pushVertex(g, [0, cap[0], 0], [0, cap[2], 0]);
             const first = g.pos.length / 3;
             for (let j = 0; j <= radial; j++) {
                 const angle = 2 * PI * j / radial;
-                const rr = cap[1] * (1 + (wobble ? wobble(angle, cap[3]) : 0));
-                pushVertex(g, [rr * Math.cos(angle), cap[0], rr * Math.sin(angle)], [0, cap[2], 0]);
-            }
-            for (let j = 0; j < radial; j++) g.idx.push(centre, first + j, first + j + 1);
-        });
-        return orient(g);
-    }
-
-    /* kantong kertas berkerut: radius dimodulasi lipatan vertikal tak beraturan (menguat ke atas),
-     * bibir atas bergelombang, kerut horizontal halus; normal numerik agar kerutan terlihat pada shading */
-    function crumpledBag(rTop, rBot, h, radial, rows) {
-        const g = newGeo();
-        const P = (a, v) => {
-            const top = 1 - v;
-            const crease = 0.014 * (Math.sin(4 * a + 1.0) + 0.6 * Math.sin(7 * a + 2.3) + 0.35 * Math.sin(11 * a + 0.4)) * (0.35 + 0.65 * top)
-                         + 0.006 * Math.sin(3 * a + v * 17.0) * Math.sin(v * 9.0 + a);
-            const rad = rTop + (rBot - rTop) * v + crease;
-            return [rad * Math.cos(a), h / 2 - v * h + 0.04 * top * top * top * Math.sin(5 * a + 0.7), rad * Math.sin(a)];
-        };
-        for (let r = 0; r <= rows; r++) {
-            const v = r / rows;
-            for (let j = 0; j <= radial; j++) {
-                const a = 2 * PI * j / radial, e = 1e-3;
-                const da = vSub(P(a + e, v), P(a - e, v));
-                const dv = vSub(P(a, Math.min(1, v + e)), P(a, Math.max(0, v - e)));
-                let n = vNorm(vCross(da, dv));
-                if (n[0] * Math.cos(a) + n[2] * Math.sin(a) < 0) n = vMul(n, -1);
-                pushVertex(g, P(a, v), n, [j / radial, 1 - v]);
-            }
-        }
-        linkGrid(g, 0, rows, radial);
-        [[0, 1], [1, -1]].forEach(cap => {            // tutup atas (agak cekung) & bawah
-            const v = cap[0], ny = cap[1];
-            const centre = pushVertex(g, [0, h / 2 - v * h - 0.03 * (1 - v), 0], [0, ny, 0]);
-            const first = g.pos.length / 3;
-            for (let j = 0; j <= radial; j++) {
-                const p = P(2 * PI * j / radial, v);
-                pushVertex(g, p, [0, ny, 0]);
+                pushVertex(g, [cap[1] * Math.cos(angle), cap[0], cap[1] * Math.sin(angle)], [0, cap[2], 0]);
             }
             for (let j = 0; j < radial; j++) g.idx.push(centre, first + j, first + j + 1);
         });
@@ -642,14 +590,12 @@ window.createMonoModel = function () {
 
     // --- jubah belakang + badan ---
     put('cape', place(extrudedCape(), { pos: [0, 0, -0.28] }));
-    // lipatan mantel: pleat vertikal yang menguat ke arah hem (t=0 bawah, t=1 leher)
-    const coatWobble = (a, t) => 0.028 * (1 - t) * (Math.sin(5 * a + 0.8) + 0.6 * Math.sin(9 * a + 2.0) + 0.35 * Math.sin(3 * a + 0.3));
     put('coat', bezierConeProfile([
         [0.48, 0.78, 0], [0.43, 0.9, 0], [0.3, 1.65, 0], [0.28, 2.03, 0]
-    ], 64, 32, 0.25, coatWobble));
+    ], 48, 32, 0.25));
 
     // --- paper bag frustum; hyperboloid head stays inside the paper shell ---
-    put('bagHead', place(crumpledBag(0.43, 0.39, 1.08, 48, 14), { pos: [0, 2.57, 0], scale: [1, 1, 0.88] }), 'head');
+    put('bagHead', place(cylinder(0.43, 0.39, 1.08, 32, 1), { pos: [0, 2.57, 0], scale: [1, 1, 0.88] }), 'head');
     put('head', place(hyperboloidHead(), { pos: [0, 2.57, 0], scale: [0.72, 0.82, 0.72] }), 'head');
 
     // --- dua mata kecil berbentuk bola pada sisi depan paper bag ---
@@ -657,67 +603,59 @@ window.createMonoModel = function () {
         put('eye', place(ellipsoid(0.085, 0.085, 0.085, 24, 16), { pos: [side * 0.15, 2.56, 0.39] }), 'head');
     });
 
-    // --- lengan kurva Bezier + telapak ellipsoid dan jari sapuan Bezier ---
-    // Kurva dipotong di t=0.5 (de Casteljau): lengan atas (armP/N) + lengan bawah & tangan (foreP/N),
-    // bentuk gabungan identik pada sudut siku 0; bola siku menutup sambungan saat menekuk.
-    const ELB = {};
-    const mid3 = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+    // pivot tiap sendi (koordinat model Mono) - diisi saat merakit lengan & kaki
+    const PIV = { head: [0, 2.1, 0] };
+    const mix3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+
+    // --- lengan kurva Bezier dipecah di t=0.5 (de Casteljau): lengan atas | siku | lengan bawah | tangan ---
     [
         [[-0.36, 1.9, 0.02], [-0.58, 1.78, 0.06], [-0.78, 1.2, 0.14], [-0.91, 0.83, 0.2]],
         [[0.36, 1.9, 0.02], [0.58, 1.78, 0.06], [0.78, 1.2, 0.14], [0.91, 0.83, 0.2]]
     ].forEach(points => {
-        const side = points[0][0] < 0 ? -1 : 1;
-        const armPart = side < 0 ? 'armN' : 'armP';
-        const forePart = side < 0 ? 'foreN' : 'foreP';
-        const q01 = mid3(points[0], points[1]), q12 = mid3(points[1], points[2]), q23 = mid3(points[2], points[3]);
-        const r0 = mid3(q01, q12), r1 = mid3(q12, q23), m = mid3(r0, r1);
-        ELB[armPart] = m;
-        put('cloth', bezierTube(points[0], q01, r0, m, 0.12, 16, 12), armPart);
-        put('cloth', place(ellipsoid(0.125, 0.125, 0.125, 12, 16), { pos: m }), armPart);          // sendi siku
-        put('cloth', bezierTube(m, r1, q23, points[3], 0.12, 16, 12), forePart);
-        const w = points[3];
-        const palm = [w[0] + side * 0.075, w[1] - 0.11, w[2] + 0.02];
-        put('skin', place(ellipsoid(0.11, 0.16, 0.075, 10, 14), { pos: palm }), forePart);
-
+        const side = points[0][0] < 0 ? -1 : 1, K = side < 0 ? 'N' : 'P';
+        const p0 = points[0], p1 = points[1], p2 = points[2], p3 = points[3];
+        const a01 = mix3(p0, p1, 0.5), a12 = mix3(p1, p2, 0.5), a23 = mix3(p2, p3, 0.5);
+        const b0 = mix3(a01, a12, 0.5), b1 = mix3(a12, a23, 0.5), E = mix3(b0, b1, 0.5);
+        PIV['arm' + K] = p0; PIV['fore' + K] = E; PIV['hand' + K] = p3;
+        put('cloth', place(ellipsoid(0.125, 0.125, 0.125, 14, 10), { pos: p0 }), 'arm' + K);      // bola bahu
+        put('cloth', bezierTube(p0, a01, b0, E, 0.12, 16, 12), 'arm' + K);                           // lengan atas
+        put('cloth', place(ellipsoid(0.125, 0.125, 0.125, 14, 10), { pos: E }), 'arm' + K);        // penutup siku
+        put('cloth', bezierTube(E, b1, a23, p3, 0.12, 16, 12), 'fore' + K);                          // lengan bawah
+        const palm = [p3[0] + side * 0.075, p3[1] - 0.11, p3[2] + 0.02];
+        put('skin', place(ellipsoid(0.11, 0.16, 0.075, 10, 14), { pos: palm }), 'hand' + K);
         for (let f = 0; f < 3; f++) {
             const fingerX = palm[0] + side * (f - 1) * 0.045;
             const a = [fingerX, palm[1] - 0.015, palm[2] + 0.035];
             const d = [fingerX + side * (0.1 - f * 0.018), palm[1] - 0.09 + f * 0.025, palm[2] + 0.06];
             put('skin', bezierTube(
-                a,
-                [a[0] + side * 0.035, a[1] - 0.025, a[2] + 0.02],
-                [d[0] - side * 0.025, d[1] - 0.015, d[2] + 0.015],
-                d, 0.014, 12), forePart);
+                a, [a[0] + side * 0.035, a[1] - 0.025, a[2] + 0.02],
+                [d[0] - side * 0.025, d[1] - 0.015, d[2] + 0.015], d, 0.014, 12), 'hand' + K);
         }
     });
 
-    // --- kaki silinder pendek; telapak dan jari mengikuti kurva Bezier ---
-    // Dibagi: paha (legP/N) | betis (shinP/N) | telapak (footP/N). Celana kini menyambung ke sepatu
-    // (model lama berhenti di y=0.24 sedangkan sepatu mulai y=0.12) dan diberi manset.
+    // --- kaki: paha (pinggul) -> betis (lutut) -> telapak (pergelangan); telapak & jari tetap kurva Bezier ---
+    const ANK = 0.155;                    // tinggi pergelangan: dasar telapak tepat menapak di lantai y=0
     [-1, 1].forEach((side, index) => {
-        const x = side * 0.19;
-        const left = index === 0;
-        const fx = x + (left ? -0.035 : 0.035);
-
-        const legPart = side < 0 ? 'legN' : 'legP';
-        const shinPart = side < 0 ? 'shinN' : 'shinP';
-        const footPart = side < 0 ? 'footN' : 'footP';
-        put('inner', place(cylinder(0.13, 0.13, 0.44, 16, 2), { pos: [x, 0.72, 0.07] }), legPart);                  // paha y 0.50..0.94
-        put('inner', place(ellipsoid(0.133, 0.133, 0.133, 10, 14), { pos: [x, 0.5, 0.07] }), legPart);              // sendi lutut
-        put('inner', place(cylinder(0.13, 0.12, 0.44, 16, 2), { pos: [x, 0.28, 0.07] }), shinPart);                // betis y 0.06..0.50
-        put('cloth', place(cylinder(0.142, 0.142, 0.07, 16, 1, false), { pos: [x, 0.125, 0.07] }), shinPart);      // manset celana
+        const x = side * 0.19, left = index === 0, fx = x + (left ? -0.035 : 0.035), K = side < 0 ? 'N' : 'P';
+        PIV['leg' + K] = [x, 0.9, 0.07]; PIV['shin' + K] = [x, 0.57, 0.07]; PIV['foot' + K] = [x, ANK, 0.07];
+        put('inner', place(cylinder(0.13, 0.13, 0.33, 16, 2), { pos: [x, 0.735, 0.07] }), 'leg' + K);          // paha
+        put('inner', place(ellipsoid(0.13, 0.13, 0.13, 14, 10), { pos: [x, 0.57, 0.07] }), 'leg' + K);        // lutut
+        put('inner', place(cylinder(0.13, 0.115, 0.415, 16, 2), { pos: [x, 0.3625, 0.07] }), 'shin' + K);     // betis
+        put('inner', place(ellipsoid(0.115, 0.115, 0.115, 14, 10), { pos: [x, ANK, 0.07] }), 'shin' + K);     // pergelangan
         put('skin', bezierTube(
-            [fx, 0, -0.12], [fx, -0.075, 0.06], [fx, -0.065, 0.34], [fx, 0, 0.49],
-            t => 0.012 + 0.105 * Math.pow(Math.sin(PI * t), 0.65), 24, 12), footPart);
-
+            [fx, ANK, -0.12], [fx, ANK - 0.075, 0.06], [fx, ANK - 0.065, 0.34], [fx, ANK, 0.49],
+            t => 0.012 + 0.105 * Math.pow(Math.sin(PI * t), 0.65), 24, 12), 'foot' + K);
         for (let t = 0; t < 3; t++) {
             const tx = fx + (t - 1) * 0.065;
             put('skin', bezierTube(
-                [tx, 0.105, 0.39], [tx, 0.09, 0.43], [tx, 0.085, 0.47],
-                [tx, 0.09, 0.49 - Math.abs(t - 1) * 0.025], 0.012, 10), footPart);
+                [tx, ANK + 0.105, 0.39], [tx, ANK + 0.09, 0.43], [tx, ANK + 0.085, 0.47],
+                [tx, ANK + 0.09, 0.49 - Math.abs(t - 1) * 0.025], 0.012, 10), 'foot' + K);
         }
     });
 
+    /* ==========================================================
+     *  BAGIAN 6 : POHON NODE (tanpa three.js) - dipakai renderer WebGL
+     * ========================================================== */
     function MNode(name, t) {
         this.name = name; this.t = t ? t.slice() : [0, 0, 0]; this.r = [0, 0, 0]; this.s = [1, 1, 1];
         this.base = { t: this.t.slice(), r: [0, 0, 0] };
@@ -726,25 +664,19 @@ window.createMonoModel = function () {
     MNode.prototype.add = function (k) { this.kids.push(k); return k; };
     MNode.prototype.local = function () { return LIBS.compose(this.t, this.r, this.s); };
 
-    // pivot (sendi) tiap bagian, koordinat model Mono
-    const PIVOT = {
-        head:  [0, 2.1, 0],
-        armP:  [0.36, 1.9, 0.02],
-        armN:  [-0.36, 1.9, 0.02],
-        legP:  [0.19, 0.9, 0.07],
-        legN:  [-0.19, 0.9, 0.07],
-        shinP: [0.19, 0.5, 0.07],  shinN: [-0.19, 0.5, 0.07],     // lutut
-        footP: [0.19, 0.15, 0.07], footN: [-0.19, 0.15, 0.07],    // pergelangan kaki
-        foreP: ELB.armP,           foreN: ELB.armN                // siku
-    };
-    const root = new MNode('mono');
-    const hips = root.add(new MNode('hips'));          // badan atas: torso + kepala + lengan
+    const sub3 = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    const root = new MNode('mono');                   // pelvis
+    const hips = root.add(new MNode('hips'));         // badan atas: torso + kepala + lengan (berputar di pinggul)
     const nodes = { root: root, hips: hips };
-    ['head', 'armP', 'armN'].forEach(p => { nodes[p] = hips.add(new MNode(p, PIVOT[p])); });
-    ['legP', 'legN'].forEach(p => { nodes[p] = root.add(new MNode(p, PIVOT[p])); });
-    // sub-sendi: posisi relatif terhadap pivot induknya
-    const sub = (child, parent) => { nodes[child] = nodes[parent].add(new MNode(child, [0, 1, 2].map(i => PIVOT[child][i] - PIVOT[parent][i]))); };
-    sub('shinP', 'legP'); sub('shinN', 'legN'); sub('footP', 'shinP'); sub('footN', 'shinN'); sub('foreP', 'armP'); sub('foreN', 'armN');
+    nodes.head = hips.add(new MNode('head', PIV.head));
+    ['P', 'N'].forEach(K => {
+        nodes['arm' + K] = hips.add(new MNode('arm' + K, PIV['arm' + K]));
+        nodes['fore' + K] = nodes['arm' + K].add(new MNode('fore' + K, sub3(PIV['fore' + K], PIV['arm' + K])));
+        nodes['hand' + K] = nodes['fore' + K].add(new MNode('hand' + K, sub3(PIV['hand' + K], PIV['fore' + K])));
+        nodes['leg' + K] = root.add(new MNode('leg' + K, PIV['leg' + K]));
+        nodes['shin' + K] = nodes['leg' + K].add(new MNode('shin' + K, sub3(PIV['shin' + K], PIV['leg' + K])));
+        nodes['foot' + K] = nodes['shin' + K].add(new MNode('foot' + K, sub3(PIV['foot' + K], PIV['shin' + K])));
+    });
     nodes.cape = hips.add(new MNode('cape', [0, 1.9, 0.12]));
     nodes.cape.r[0] = 0.12; nodes.cape.base.r[0] = 0.12;
 
@@ -753,7 +685,7 @@ window.createMonoModel = function () {
         const g = pieces[key];
         let off = [0, 0, 0], target = hips;
         if (name === 'cape') { off = [0, 1.9, 0]; target = nodes.cape; }       // pivot jubah di bahu
-        else if (part !== 'torso') { off = PIVOT[part]; target = nodes[part]; }
+        else if (part !== 'torso') { off = PIV[part]; target = nodes[part]; }
         const pos = new Float32Array(g.pos.length);
         for (let i = 0; i < pos.length; i += 3) { pos[i] = g.pos[i] - off[0]; pos[i + 1] = g.pos[i + 1] - off[1]; pos[i + 2] = g.pos[i + 2] - off[2]; }
         target.meshes.push({ pos: pos, nor: new Float32Array(g.nor), uv: new Float32Array(g.uv), idx: g.idx, mat: mats[slots[name].mat] });

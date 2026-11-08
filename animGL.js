@@ -19,88 +19,45 @@ window.createAnimation = function (ctx) {
   function clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
   function sstep(x) { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); }
   function lerp(a, b, u) { return a + (b - a) * u; }
-  function soft(x, m) { return m * Math.tanh(x / m); }          // batas lunak (tanpa patahan kecepatan seperti clamp)
   function hash(n) { var s = Math.sin(n * 127.1) * 43758.5453; return s - Math.floor(s); }
-  // noise halus kontinu dalam [-1, 1] (pengganti hash per-frame yang membuat gemetar patah-patah)
-  function nz(t, seed) {
-    seed = seed || 0;
-    return 0.5 * Math.sin(t + seed * 12.9898) + 0.3 * Math.sin(t * 2.37 + seed * 78.233) + 0.2 * Math.sin(t * 4.11 + seed * 37.719);
-  }
-  // Respons pegas teredam (frekuensi f Hz, rasio redam z) terhadap sinyal fn(t): konvolusi dengan impuls-respons
-  // h(tau) = (w^2/wd) e^(-z w tau) sin(wd tau). Gain DC = 1, jadi sinyal konstan lewat tanpa berubah, sedangkan
-  // perubahan mendadak tertunda dan sedikit melampaui target (overshoot) -> gerakan sekunder kain/rambut/topi.
-  // Karena murni fungsi dari t, slider seek & pause tetap konsisten.
-  function spring(fn, t, f, z) {
-    var w = TAU * f, wd = w * Math.sqrt(1 - z * z), dt = 0.04, N = Math.max(4, Math.round(Math.min(0.9, 3 / (z * w)) / dt)), sum = 0;
-    for (var k = 0; k < N; k++) { var tau = (k + 0.5) * dt; sum += fn(t - tau) * Math.exp(-z * w * tau) * Math.sin(wd * tau); }
-    return sum * dt * w * w / wd;
-  }
 
-  // Track: nilai skalar berbasis keyframe [[t, v, mode?]].
-  // Default = interpolasi kubik Hermite yang MONOTON (tidak overshoot, kecepatan kontinu di keyframe
-  // selama arahnya sama; berhenti halus di puncak/dataran). 'l' = linear, 's' = smoothstep (perilaku lama).
-  function Track(k) {
-    this.k = k;
-    var n = k.length, d = [], m = [], i;
-    for (i = 0; i < n - 1; i++) d.push((k[i + 1][1] - k[i][1]) / (k[i + 1][0] - k[i][0]));
-    m[0] = 0; m[n - 1] = 0;
-    for (i = 1; i < n - 1; i++) {
-      if (d[i - 1] * d[i] <= 0) m[i] = 0;
-      else {
-        var h0 = k[i][0] - k[i - 1][0], h1 = k[i + 1][0] - k[i][0], w1 = 2 * h1 + h0, w2 = h1 + 2 * h0;
-        m[i] = (w1 + w2) / (w1 / d[i - 1] + w2 / d[i]);
-      }
-    }
-    this.m = m;
-  }
+  // Track: nilai skalar berbasis keyframe [[t, v, 'l'?]]. Default smoothstep, 'l' = linear.
+  function Track(k) { this.k = k; }
   Track.prototype.at = function (t) {
     var k = this.k, n = k.length;
     if (t <= k[0][0]) return k[0][1];
     if (t >= k[n - 1][0]) return k[n - 1][1];
     for (var i = 1; i < n; i++) {
       if (t < k[i][0]) {
-        var a = k[i - 1], b = k[i], h = b[0] - a[0], u = (t - a[0]) / h, mode = b[2];
-        if (mode === 'l') return a[1] + (b[1] - a[1]) * u;
-        if (mode === 's') { u = sstep(u); return a[1] + (b[1] - a[1]) * u; }
-        var u2 = u * u, u3 = u2 * u;
-        return (2 * u3 - 3 * u2 + 1) * a[1] + (u3 - 2 * u2 + u) * h * this.m[i - 1] +
-          (-2 * u3 + 3 * u2) * b[1] + (u3 - u2) * h * this.m[i];
+        var a = k[i - 1], b = k[i], u = (t - a[0]) / (b[0] - a[0]);
+        if (b[2] !== 'l') u = sstep(u);
+        return a[1] + (b[1] - a[1]) * u;
       }
     }
     return k[n - 1][1];
   };
   function T(k) { return new Track(k); }
 
-  // Path: jalur [t, x, z]. Posisi = jalur linear yang DIRATA-RATAKAN pada jendela +-h detik
-  // (konvolusi kotak, dihitung eksak lewat integral): kecepatan kontinu, belokan membulat,
-  // tidak pernah keluar dari cangkang cembung titik-titiknya (aman terhadap meja/dinding).
-  function Path(pts, h) {
-    this.p = pts; this.step = 1 / 60; this.h = h || 0.35;
-    var n = pts.length; this.C = [[0, 0]];
-    for (var i = 1; i < n; i++) {
-      var a = pts[i - 1], b = pts[i], dt = b[0] - a[0];
-      this.C.push([this.C[i - 1][0] + (a[1] + b[1]) * 0.5 * dt, this.C[i - 1][1] + (a[2] + b[2]) * 0.5 * dt]);
-    }
+  // Path: jalur [t, x, z] linear + tabel jarak kumulatif (untuk siklus langkah)
+  function Path(pts) {
+    this.p = pts; this.step = 1 / 60;
     this.cum = [0];
     var prev = this.at(0), acc = 0;
     for (var t = this.step; t <= DUR + 0.001; t += this.step) {
       var c = this.at(t); acc += Math.hypot(c[0] - prev[0], c[1] - prev[1]); this.cum.push(acc); prev = c;
     }
   }
-  Path.prototype.F = function (t) {                // integral posisi linear dari t0 sampai t
-    var p = this.p, n = p.length, C = this.C;
-    if (t <= p[0][0]) return [p[0][1] * (t - p[0][0]), p[0][2] * (t - p[0][0])];
-    if (t >= p[n - 1][0]) return [C[n - 1][0] + p[n - 1][1] * (t - p[n - 1][0]), C[n - 1][1] + p[n - 1][2] * (t - p[n - 1][0])];
+  Path.prototype.at = function (t) {
+    var p = this.p, n = p.length;
+    if (t <= p[0][0]) return [p[0][1], p[0][2]];
+    if (t >= p[n - 1][0]) return [p[n - 1][1], p[n - 1][2]];
     for (var i = 1; i < n; i++) {
       if (t < p[i][0]) {
-        var a = p[i - 1], b = p[i], D = b[0] - a[0], dt = t - a[0], q = dt * dt / (2 * D);
-        return [C[i - 1][0] + a[1] * dt + (b[1] - a[1]) * q, C[i - 1][1] + a[2] * dt + (b[2] - a[2]) * q];
+        var a = p[i - 1], b = p[i], u = (t - a[0]) / (b[0] - a[0]);
+        return [a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u];
       }
     }
-  };
-  Path.prototype.at = function (t) {
-    var h = this.h, f1 = this.F(t + h), f0 = this.F(t - h);
-    return [(f1[0] - f0[0]) / (2 * h), (f1[1] - f0[1]) / (2 * h)];
+    return [p[n - 1][1], p[n - 1][2]];
   };
   Path.prototype.dist = function (t) {
     var f = clamp(t, 0, DUR) / this.step, i = Math.floor(f), u = f - i;
@@ -133,6 +90,7 @@ window.createAnimation = function (ctx) {
   var sixArmRUp = T([[0, 1], [23.2, 1], [24.2, 0], [65.2, 0], [66.0, 1]]);         // lengan kanan terangkat (lighter)
   var sixReachL = T([[0, 0], [21.8, 0], [22.6, 0.55], [23.3, 0.55], [24.2, 0],
     [54.2, 0], [56.3, 1], [56.9, 1], [58.4, 0.5], [66.2, 0.5], [68.0, 0.66], [84.5, 0.66], [85.4, 0.2], [86.5, 0]]);
+  var sixDoor = T([[0, 0], [66.2, 0], [68.0, 1], [84.5, 1], [85.5, 0]]);          // lengan kiri sedikit turun saat mengarahkan kunci ke lubang
   var sixScared = T([[0, 0], [22.8, 0.2], [24, 0.8], [27, 0.5], [59.0, 0.4], [60.2, 0.9], [66, 0.6], [85, 0.9], [DUR, 1]]);
   var sixHeadYaw = T([[0, 0], [15.8, 0], [16.6, 0.5], [17.4, 0], [22.9, 0], [23.5, 0.9], [26, 0.9], [28, -0.7], [48, -0.7], [50, 0],
     [60.2, 0], [60.7, 0.9], [62, 0.9], [62.9, 0], [66.5, 0], [67.5, 1.1], [69, 1.1], [69.5, 0.2], [72, 0.1], [73, 1.2], [75, 1.2],
@@ -177,28 +135,6 @@ window.createAnimation = function (ctx) {
   var janReach = T([[0, 0], [62.0, 0], [63.3, 1], [DUR, 1]]);                       // lengan memanjang ke Six
   var janReachLen = T([[62.4, 1.8], [64.5, 2.7], [67, 3.0], [72, 3.4], [78, 3.9], [84.5, 4.4], [88, 4.6]]); // panjang lengan (meter dunia)
   var janDoor = T([[0, 0], [87.5, 0], [89.5, 1]]);                                  // beralih ke target pintu lift
-
-  // ---- SINYAL PENGGERAK & KARAKTER GERAK (dipakai gerakan sekunder) ----
-  // acc: percepatan maju (m/s^2) | yr: laju putar badan (rad/s) | lead: sudut yang akan diputar 0.3 s ke depan
-  function mkDrv(path, yaw) {
-    return {
-      acc: function (t) { return soft((path.speed(t + 0.15) - path.speed(t - 0.15)) / 0.3, 3); },
-      yr: function (t) { return soft((yaw.at(t + 0.12) - yaw.at(t - 0.12)) / 0.24, 4); },
-      lead: function (t) { return soft(yaw.at(t + 0.3) - yaw.at(t), 0.6); }
-    };
-  }
-  var DRV = { six: mkDrv(sixPath, sixYaw), mono: mkDrv(monoPath, monoYaw), jan: mkDrv(janPath, janYaw) };
-  // Karakter gerak masing-masing tokoh (semua dalam radian / satuan lokal):
-  //  sprF/sprZ pegas | accLean condong saat akselerasi | twist putaran pinggul-bahu | roll goyang kiri-kanan | bank miring di tikungan
-  //  shift geser beban | lift angkat kaki ayun | breath napas | idleHead lirikan saat diam | tremor gemetar saat takut
-  var CH = {
-    six:  { sprF: 1.6, sprZ: 0.50, accLean: 0.07, twist: 0.09, roll: 0.035, idleRoll: 0.015, bank: 0.040, shift: 0.010, idleShift: 0.010,
-            lift: 0.020, liftRun: 0.030, breathA: 0.010, breathF: 1.8, armBreath: 0.015, idleHead: 0.10, tremor: 0.030 },     // ringan, gesit, gugup
-    mono: { sprF: 1.3, sprZ: 0.45, accLean: 0.06, twist: 0.06, roll: 0.025, idleRoll: 0.012, bank: 0.030, shift: 0.020, idleShift: 0.015,
-            lift: 0.045, liftRun: 0.050, breathA: 0.006, breathF: 1.4, armBreath: 0.012, idleHead: 0.16, tremor: 0.040, hunch: 0.05, idleNod: 0.05 }, // hati-hati, membungkuk, selalu melirik
-    jan:  { sprF: 0.9, sprZ: 0.40, accLean: 0.05, twist: 0.10, bank: 0.050, shift: 0.020, lift: 0.040, breathA: 0.015, breathF: 0.95,
-            idleHead: 0.18, twitch: 0.12 }                                                                                      // berat, lambat, kepala tersentak
-  };
 
   // ---- PROPS ----
   var doorAngle = T([[0, 0], [84.6, 0], [88.0, 1.75]]);          // daun pintu terbuka (rad)
@@ -249,12 +185,21 @@ window.createAnimation = function (ctx) {
    *  AKTOR
    * ======================================================= */
   var Rn = ctx.R, GeoX = window.LNGeo;
-  var sixRoot = ctx.six.root, SN = ctx.six.nodes;
-  SN.six = sixRoot;
+  /* Six (six.js versi baru) tidak punya node torso/pinggul: root = badan atas + kaki.
+   * Di sini struktur disesuaikan TANPA mengubah six.js: pinggul (pelvis) menjadi induk kedua kaki,
+   * badan atas (root lama) menjadi 'torso' sehingga bisa membungkuk di pinggul tanpa memiringkan kaki. */
+  var SN = ctx.six.nodes, sixBody = ctx.six.root;
+  var sixRoot = new SceneNode('pelvis');
+  ['legL', 'legR'].forEach(function (k) {
+    var i = sixBody.kids.indexOf(SN[k]); if (i >= 0) sixBody.kids.splice(i, 1);
+    sixRoot.kids.push(SN[k]);
+  });
+  sixRoot.kids.push(sixBody);
+  SN.six = sixRoot; SN.torso = sixBody;
   var monoRoot = ctx.mono.root, MN = ctx.mono.nodes;
   var janRoot = ctx.jan.root, JN = ctx.jan.nodes;
   Rn.prepSix(sixRoot); Rn.prepJanitor(janRoot); Rn.prepMono(monoRoot, ctx.mono.textures);
-  var SCALE = { six: 0.78, mono: 0.49, jan: 0.95 };
+  var SCALE = { six: 0.72, mono: 0.49, jan: 0.95 };
   var M_ = { six: I4(), mono: I4(), jan: I4() };        // matriks dunia tiap aktor
   var P_ = { six: [0, 0], mono: [0, 0], jan: [0, 0] };  // posisi lantai (x, z)
   var W_ = { six: [0, 0.7, 0], mono: [0, 0.6, 0], jan: [0, 1.2, 0] };
@@ -262,11 +207,11 @@ window.createAnimation = function (ctx) {
   var lastStep = { six: 0, mono: 0, jan: 0 }, lastEvt = 0;
   var camEye = [0, 1, 5];
 
-  var SIX_NAMES = ['six', 'head', 'hood', 'armL', 'armR', 'legL', 'legR', 'skirt', 'hair', 'foreL', 'foreR', 'shinL', 'shinR', 'footL', 'footR'];
-  function resetSix() { SIX_NAMES.forEach(function (k) { var n = SN[k]; n.t = n.base.t.slice(); n.r = n.base.r.slice(); n.s = [1, 1, 1]; }); sixRoot.t = [0, 0, 0]; sixRoot.r = [0, 0, 0]; }
-  var MONO_NAMES = ['hips', 'head', 'armP', 'armN', 'legP', 'legN', 'cape', 'shinP', 'shinN', 'footP', 'footN', 'foreP', 'foreN'];
+  var SIX_NAMES = ['six', 'torso', 'head', 'hood', 'hair', 'skirt', 'armL', 'foreL', 'armR', 'foreR', 'legL', 'shinL', 'footL', 'legR', 'shinR', 'footR'];
+  function resetSix() { SIX_NAMES.forEach(function (k) { var n = SN[k]; n.t = n.base.t.slice(); n.r = n.base.r.slice(); n.s = [1, 1, 1]; }); }
+  var MONO_NAMES = ['root', 'hips', 'head', 'armP', 'foreP', 'handP', 'armN', 'foreN', 'handN', 'legP', 'shinP', 'footP', 'legN', 'shinN', 'footN', 'cape'];
   function resetMono() { MONO_NAMES.forEach(function (k) { var n = MN[k]; n.t = n.base.t.slice(); n.r = n.base.r.slice(); n.s = [1, 1, 1]; }); }
-  var JAN_NAMES = ['root', 'body', 'head', 'hat', 'legL', 'legR', 'shinL', 'shinR', 'shoeL', 'shoeR'], janRest = {};
+  var JAN_NAMES = ['root', 'body', 'head', 'hat', 'legL', 'shinL', 'shoeL', 'legR', 'shinR', 'shoeR'], janRest = {};
   JAN_NAMES.forEach(function (k) { var n = JN[k]; janRest[k] = { p: n.position.slice(), r: n.rotation.slice(), s: n.scale.slice() }; });
   function resetJan() { JAN_NAMES.forEach(function (k) { var n = JN[k]; n.position = janRest[k].p.slice(); n.rotation = janRest[k].r.slice(); n.scale = janRest[k].s.slice(); }); }
 
@@ -274,7 +219,7 @@ window.createAnimation = function (ctx) {
   var lighterBody = Rn.mesh(GeoX.box(0.03, 0.075, 0.016, 1, 1)), lighterCap = Rn.mesh(GeoX.box(0.032, 0.02, 0.018, 1, 1));
   var mLighter = { color: [0.54, 0.55, 0.56], spec: 0.5, shin: 40 }, mLighterCap = { color: [0.33, 0.34, 0.35], spec: 0.5, shin: 40 };
   var flameGeo = Rn.mesh(GeoX.sphere(1, 1, 1, 10, 12));
-  var armRWorld = I4(), armLWorld = I4(), flamePos = [0, 0, 0], flameK = 0, flameFlick = 1;
+  var handRWorld = I4(), handLWorld = I4(), flamePos = [0, 0, 0], flameK = 0, flameFlick = 1;
 
   function flick(t, seed, amt) {
     var slot = Math.floor(t * 11 + seed * 7), r = hash(slot + seed);
@@ -284,60 +229,60 @@ window.createAnimation = function (ctx) {
   }
 
   /* =======================================================
-   *  POSE: SIX  (Euler per node)
+   *  KINEMATIKA KAKI (paha - lutut - pergelangan) + POSE
+   *  Sudut "maju positif": f1 = fleksi pinggul, k = fleksi lutut (betis ke belakang),
+   *  telapak kaki dikoreksi (f1 - k) agar tetap rata dengan lantai.
+   *  Node memakai Rx negatif untuk maju:  paha.r0 = -f1 , betis.r0 = +k , kaki.r0 = f1 - k
+   * ======================================================= */
+  function legSolve(phase, walk, run, cr, P) {
+    var s = Math.sin(phase), c = Math.cos(phase);
+    var f1w = P.A * (1 + 0.8 * run) * walk * s + 0.05 * walk;                      // ayunan paha
+    var kw = (0.10 + P.K * (1 + 0.9 * run) * Math.max(0, c)) * walk;               // lutut menekuk saat kaki diayun ke depan
+    var f1 = lerp(f1w, P.sqF, cr) + cr * 0.28 * walk * s;
+    var k = lerp(kw, P.sqK, cr) + cr * 0.45 * walk * Math.max(0, c);                // merangkak: tetap ada ayunan
+    return { f1: f1, k: k, ank: f1 - k, hipY: P.L1 * Math.cos(f1) + P.L2 * Math.cos(f1 - k) + P.ankleH };
+  }
+  var LEG_SIX = { L1: 0.27, L2: 0.26, ankleH: 0.07, A: 0.42, K: 0.85, sqF: 1.45, sqK: 2.25 };   // geometri six.js baru: pinggul y=0.60, lutut -0.27, pergelangan -0.53
+  var LEG_MONO = { L1: 0.33, L2: 0.415, ankleH: 0.155, A: 0.46, K: 0.9, sqF: 1.40, sqK: 2.20 };
+  var LEG_JAN = { L1: 0.21, L2: 0.21, ankleH: 0.08, A: 0.40, K: 0.65, sqF: 0, sqK: 0 };
+
+  /* =======================================================
+   *  POSE: SIX
    * ======================================================= */
   function poseSix(t) {
     resetSix();
-    var K = CH.six, d = DRV.six;
-    var sp = sixPath.speed(t), a = clamp(sp / 0.6, 0, 1), run = clamp((sp - 1.3) / 0.5, 0, 1), idle = 1 - a;
-    var c = sixCrouch.at(t), ph = sixPath.dist(t) / 0.62 * TAU, sw = Math.sin(ph), cw = Math.cos(ph);
-    var s = sixScared.at(t), tr = nz(t * 9.0, 1.0) * K.tremor * s;                 // gemetar halus (bukan hash per-frame)
-    var accS = soft(spring(d.acc, t, K.sprF, K.sprZ), 1.5), yrS = soft(spring(d.yr, t, K.sprF * 0.9, K.sprZ), 2.5);
-    var lean = 0.05 * a + 0.20 * run + 0.42 * c + K.accLean * accS * (1 - c);       // momentum: condong saat mempercepat
-    var amp = (0.30 + 0.38 * run) * a * (1 - 0.65 * c);
-    var thL = -1.15 * c + sw * amp, thR = -1.15 * c - sw * amp;
-    var ys = K.twist * sw * a * (1 - 0.6 * c);                                      // bahu & pinggul berputar berlawanan
-    SN.legL.r[0] = thL - lean; SN.legR.r[0] = thR - lean;
-    SN.legL.r[1] = SN.legR.r[1] = -0.8 * ys;
-    // lutut menekuk paling besar di tengah ayunan (kaki melintas di bawah badan); pergelangan menjaga telapak tetap rata
-    var Kf = (0.50 + 0.35 * run) * a * (1 - c);
-    var kL = Kf * Math.pow(Math.max(0, -cw), 1.3) + 0.5 * c + 0.05 * a, kR = Kf * Math.pow(Math.max(0, cw), 1.3) + 0.5 * c + 0.05 * a;
-    SN.shinL.r[0] = kL; SN.shinR.r[0] = kR;
-    SN.footL.r[0] = -(thL + kL) + 0.5 * Math.max(0, thL) * (1 - c);                 // tumit naik saat kaki di belakang
-    SN.footR.r[0] = -(thR + kR) + 0.5 * Math.max(0, thR) * (1 - c);
-    function depth(th, k) { return 0.27 * Math.cos(th) + 0.26 * Math.cos(th + k) + 0.07; }   // tinggi pinggul -> telapak
-    var D = 0.6 - Math.max(depth(thL, kL), depth(thR, kR)), H = 0.62;                // kaki terendah selalu menapak
-    sixRoot.r[0] = lean;
-    sixRoot.r[1] = ys;
-    sixRoot.r[2] = K.roll * sw * a * (1 - c) + K.idleRoll * Math.sin(t * 0.45) * idle * (1 - c) - K.bank * yrS;   // goyang + miring ke tikungan
-    sixRoot.t = [K.shift * sw * a + K.idleShift * Math.sin(t * 0.45) * idle * (1 - c),
-      H * (1 - Math.cos(lean)) - D, -H * Math.sin(lean)];                           // beban berpindah ke kaki tumpu
-    sixRoot.s[1] = 1 + K.breathA * Math.sin(t * K.breathF);                         // napas
-    var swArm = -sw * 0.45 * a * (1 - c), reachL = sixReachL.at(t), drag = 0.07 * accS, br = K.armBreath * Math.sin(t * K.breathF + 0.4);
-    SN.armL.r[0] = lerp(-0.06 + swArm - 0.5 * c - 0.6 * s + drag, -2.35, reachL) + tr;
-    SN.armL.r[2] = lerp(0.17 + 0.2 * s, 0.02, reachL) + br;
-    var up = sixArmRUp.at(t);
-    SN.armR.r[0] = lerp(-0.06 - swArm - 0.5 * c - 0.6 * s + drag, -1.15 - 0.05 * Math.sin(t * 2.1), up) - tr;
-    SN.armR.r[2] = lerp(-0.17 - 0.2 * s, -0.12, up) - br;
-    // siku: menekuk saat berlari/takut, lebih menekuk pada ayunan ke depan; lurus saat meraih / memegang pemantik
-    var elb = -(0.10 + 0.10 * a + 0.45 * run + 0.55 * s + 0.25 * c);
-    SN.foreL.r[0] = lerp(elb - 0.25 * a * Math.max(0, -swArm) / 0.45, -0.12, reachL);
-    SN.foreR.r[0] = lerp(elb - 0.25 * a * Math.max(0, swArm) / 0.45, -0.04, up);
-    // kepala: melirik saat diam, mendahului badan saat berbelok, distabilkan terhadap putaran/goyangan badan
-    SN.head.r[1] = sixHeadYaw.at(t) + tr * 2 + 0.7 * d.lead(t) + K.idleHead * nz(t * 0.35, 2.0) * idle * (1 - 0.7 * s) - 0.9 * ys;
-    SN.head.r[0] = sixHeadPitch.at(t) - 0.55 * lean + 0.03 * nz(t * 0.5, 3.0) * idle - 0.05 * accS;
-    SN.head.r[2] = -0.6 * sixRoot.r[2] + 0.02 * nz(t * 0.4, 4.0) * idle;
-    // tudung: tertinggal saat mempercepat, memantul tiap langkah, mengayun berlawanan arah putar
-    SN.hood.r[0] += -0.10 * accS + 0.03 * run * Math.sin(2 * ph - 0.8);
-    SN.hood.r[2] += 0.03 * Math.sin(t * 0.9 + 0.5) + tr + 0.06 * yrS;
-    // rok jas: tergantung gravitasi (menetralkan sebagian condong), terdorong kaki depan, tertinggal saat mempercepat
-    var legF = Math.max(0, -thL, -thR), legB = Math.max(0, thL, thR);
-    SN.skirt.r[0] = clamp(-0.5 * lean + 0.2 * legB - 0.25 * legF + 0.10 * accS + 0.04 * run * Math.sin(2 * ph - 1.0), -0.2, 0.2);
-    SN.skirt.r[1] = -0.35 * ys;
-    SN.skirt.r[2] = clamp(-0.08 * yrS + 0.03 * sw * a, -0.15, 0.15);
-    // rambut (bob): tertinggal saat kepala bergerak / mempercepat, bergoyang halus saat diam
-    SN.hair.r[0] = 0.16 * accS + 0.05 * run * Math.sin(2 * ph - 1.0) + 0.012 * Math.sin(t * 1.3);
-    SN.hair.r[2] = -0.14 * yrS + 0.02 * nz(t * 0.9, 13.0) + 0.5 * tr;
+    var sp = sixPath.speed(t), a = clamp(sp / 0.6, 0, 1), run = clamp((sp - 1.3) / 0.5, 0, 1);
+    var c = sixCrouch.at(t), ph = sixPath.dist(t) / 0.62 * TAU;
+    var s = sixScared.at(t), tr = (hash(Math.floor(t * 30)) - 0.5) * 0.03 * s;
+    var gL = legSolve(ph, a, run, c, LEG_SIX), gR = legSolve(ph + Math.PI, a, run, c, LEG_SIX);
+    var bob = 0.012 * a * (1 + run) * Math.cos(2 * ph), H = 0.60;
+    sixRoot.t = [0, Math.max(gL.hipY, gR.hipY) - H + bob, 0];                       // pinggul turun mengikuti tekukan kaki
+    SN.legL.r[0] = -gL.f1; SN.shinL.r[0] = gL.k; SN.footL.r[0] = gL.ank;
+    SN.legR.r[0] = -gR.f1; SN.shinR.r[0] = gR.k; SN.footR.r[0] = gR.ank;
+    SN.legL.r[2] = 0.03 * c; SN.legR.r[2] = -0.03 * c;                               // lutut sedikit terbuka saat jongkok
+
+    var lean = 0.05 * a + 0.20 * run + 0.30 * c;                                      // badan condong ke depan, berputar di pinggul
+    SN.torso.r = [lean, 0.10 * Math.sin(ph) * a * (1 + run), 0.02 * Math.sin(ph) * a];
+    SN.torso.t = [0, H * (1 - Math.cos(lean)), -H * Math.sin(lean)];
+    SN.torso.s[1] = 1 + 0.008 * Math.sin(t * 1.8);
+
+    // lengan: bahu (a1) + siku (e), maju positif. Sudut dasar bahu dari six.js (base.r)
+    var swL = -gL.f1 * 0.9 * (1 - c), swR = -gR.f1 * 0.9 * (1 - c);
+    var e0 = 0.12 * a + 0.9 * run + 0.9 * c + 1.1 * s;
+    var a1L = swL + 0.6 * c + 0.9 * s, a1R = swR + 0.6 * c + 0.9 * s;
+    var reachL = sixReachL.at(t), up = sixArmRUp.at(t);
+    a1L = lerp(a1L, 2.1, reachL); var eL = lerp(e0 + 0.25 * Math.max(0, swL), 0.25, reachL);
+    var dr = sixDoor.at(t); a1L -= 0.38 * dr; eL -= 0.22 * dr;
+    a1R = lerp(a1R, 0.95, up); var eR = lerp(e0 + 0.25 * Math.max(0, swR), 1.1 + 0.05 * Math.sin(t * 2.1), up);
+    SN.armL.r[0] = SN.armL.base.r[0] - a1L + tr; SN.armL.r[2] = lerp(SN.armL.base.r[2] + 0.2 * s, 0.02, reachL); SN.foreL.r[0] = -eL;
+    SN.armR.r[0] = SN.armR.base.r[0] - a1R - tr; SN.armR.r[2] = lerp(SN.armR.base.r[2] - 0.2 * s, -0.12, up); SN.foreR.r[0] = -eR;
+
+    SN.head.r[1] = sixHeadYaw.at(t) + tr * 2;
+    SN.head.r[0] = sixHeadPitch.at(t) - 0.55 * lean + 0.03 * Math.sin(2 * ph) * a;
+    SN.hood.r[2] += 0.03 * Math.sin(t * 0.9 + 0.5) + tr;
+    // gerak sekunder: rambut menjuntai dan rok ikut berayun (node 'hair' & 'skirt' dari six.js)
+    if (SN.hair) { SN.hair.r[0] = 0.05 * Math.sin(2 * ph + 0.6) * a - 0.15 * lean; SN.hair.r[2] = 0.04 * Math.sin(t * 1.3); }
+    if (SN.skirt) { SN.skirt.r[0] = 0.10 * (gL.f1 + gR.f1) * 0.5 * (1 - c) + 0.06 * run; SN.skirt.r[2] = 0.05 * Math.sin(ph) * a; }
   }
 
   /* =======================================================
@@ -345,81 +290,78 @@ window.createAnimation = function (ctx) {
    * ======================================================= */
   function poseMono(t) {
     resetMono();
-    var K = CH.mono, d = DRV.mono;
-    var sp = monoPath.speed(t), a = clamp(sp / 0.6, 0, 1), run = clamp((sp - 1.25) / 0.5, 0, 1), idle = 1 - a;
-    var c = monoCrouch.at(t), ph = monoPath.dist(t) / 0.55 * TAU, sw = Math.sin(ph), cw = Math.cos(ph);
-    var s = monoScared.at(t), tr = nz(t * 10.0, 9.0) * K.tremor * s;
-    var accS = soft(spring(d.acc, t, K.sprF, K.sprZ), 1.5), yrS = soft(spring(d.yr, t, K.sprF * 0.9, K.sprZ), 2.5);
-    var lean = 0.05 * a + 0.16 * run + 0.38 * c + K.hunch * (1 - c) + K.accLean * accS * (1 - c);   // selalu sedikit membungkuk
-    var amp = (0.42 + 0.32 * run) * a * (1 - 0.6 * c);
-    var thP = -1.1 * c + sw * amp, thN = -1.1 * c - sw * amp;
-    var H = 0.9, ys = K.twist * sw * a * (1 - 0.6 * c);
-    // lutut menekuk saat ayunan; pergelangan menjaga telapak tetap rata; pinggul turun mengikuti kaki yang menapak
-    var Kf = (0.55 + 0.40 * run) * a * (1 - c);
-    var kP = Kf * Math.pow(Math.max(0, -cw), 1.3) + 0.5 * c + 0.05 * a, kN = Kf * Math.pow(Math.max(0, cw), 1.3) + 0.5 * c + 0.05 * a;
-    function depth(th, k) { return 0.40 * Math.cos(th) + 0.35 * Math.cos(th + k) + 0.32; }     // pinggul -> dasar sepatu (total 1.07)
-    var D = 1.07 - Math.max(depth(thP, kP), depth(thN, kN));
-    var roll = K.roll * sw * a * (1 - c) + K.idleRoll * Math.sin(t * 0.4 + 1.0) * idle * (1 - c) - K.bank * yrS;
-    MN.hips.r[0] = lean; MN.hips.r[1] = ys; MN.hips.r[2] = roll;
-    MN.hips.t = [K.shift * sw * a + K.idleShift * Math.sin(t * 0.4 + 1.0) * idle * (1 - c), H * (1 - Math.cos(lean)) - D, -H * Math.sin(lean)];
-    MN.hips.s[1] = 1 + K.breathA * Math.sin(t * K.breathF);
-    MN.legP.r[0] = thP; MN.legN.r[0] = thN; MN.legP.r[1] = MN.legN.r[1] = -0.8 * ys;
-    MN.legP.t[1] = 0.9 - D; MN.legN.t[1] = 0.9 - D;
-    MN.shinP.r[0] = kP; MN.shinN.r[0] = kN;
-    MN.footP.r[0] = -(thP + kP) + 0.5 * Math.max(0, thP) * (1 - c); MN.footN.r[0] = -(thN + kN) + 0.5 * Math.max(0, thN) * (1 - c);
-    var pull = monoPull.at(t), reach = monoReach.at(t), drag = 0.06 * accS, br = K.armBreath * Math.sin(t * K.breathF + 0.5);
-    var armPx = lerp(-sw * 0.5 * a * (1 - c) - 0.4 * s, -0.9, reach);
-    armPx = lerp(armPx, -1.25, pull);
-    MN.armP.r[0] = armPx + drag + tr - lean * 0.3; MN.armP.r[2] = lerp(0, -0.1, pull) - br;
-    MN.armN.r[0] = sw * 0.5 * a * (1 - c) - 0.4 * s + drag - tr - lean * 0.3; MN.armN.r[2] = br;
-    // siku: sedikit menekuk saat berjalan/takut; lurus saat meraih/menarik (posisi tangan tetap seperti semula)
-    var elb = -(0.10 + 0.08 * a + 0.40 * run + 0.45 * s + 0.20 * c);
-    MN.foreP.r[0] = lerp(lerp(elb - 0.2 * a * Math.max(0, sw) , -0.05, reach), -0.03, pull);
-    MN.foreN.r[0] = elb - 0.2 * a * Math.max(0, -sw);
-    MN.head.r[0] = -0.6 * lean + K.idleNod * nz(t * 0.5, 5.0) - 0.05 * accS;
-    MN.head.r[1] = soft(monoHeadYaw.at(t) + tr * 2 + 0.5 * d.lead(t) + K.idleHead * nz(t * 0.28, 6.0) * idle * (1 - 0.7 * s) - 0.9 * ys, 1.0);
-    MN.head.r[2] = -0.6 * roll;
-    // jubah: terseret ke belakang saat mempercepat, berkibar saat lari, mengayun berlawanan arah putar
-    MN.cape.r[0] = 0.12 + 0.10 * a + 0.25 * run + 0.02 * Math.sin(t * 2.2) + 0.12 * accS + 0.025 * run * (Math.sin(t * 8.0) + 0.5 * Math.sin(t * 13.7));
-    MN.cape.r[2] = -0.10 * yrS + 0.02 * nz(t * 1.1, 7.0);
+    var sp = monoPath.speed(t), a = clamp(sp / 0.6, 0, 1), run = clamp((sp - 1.25) / 0.5, 0, 1);
+    var c = monoCrouch.at(t), ph = monoPath.dist(t) / 0.55 * TAU;
+    var s = monoScared.at(t), tr = (hash(Math.floor(t * 30) + 9) - 0.5) * 0.04 * s;
+    var gP = legSolve(ph, a, run, c, LEG_MONO), gN = legSolve(ph + Math.PI, a, run, c, LEG_MONO);
+    var bob = 0.02 * a * (1 + run) * Math.cos(2 * ph);
+    MN.root.t = [0, Math.max(gP.hipY, gN.hipY) - 0.9 + bob, 0];
+    MN.legP.r[0] = -gP.f1; MN.shinP.r[0] = gP.k; MN.footP.r[0] = gP.ank;
+    MN.legN.r[0] = -gN.f1; MN.shinN.r[0] = gN.k; MN.footN.r[0] = gN.ank;
+    var lean = 0.05 * a + 0.16 * run + 0.30 * c, H = 0.9;
+    MN.hips.r = [lean, 0.08 * Math.sin(ph) * a, 0];
+    MN.hips.t = [0, H * (1 - Math.cos(lean)), -H * Math.sin(lean)];
+
+    var swP = -gP.f1 * 0.7 * (1 - c), swN = -gN.f1 * 0.7 * (1 - c);
+    var pull = monoPull.at(t), reach = monoReach.at(t);
+    var e0 = 0.10 * a + 0.8 * run + 0.5 * c + 0.5 * s;
+    var a1P = swP + 0.25 * c + 0.3 * s, eP = e0 + 0.2 * Math.max(0, swP);
+    a1P = lerp(a1P, 1.0, reach); eP = lerp(eP, 0.45, reach);
+    a1P = lerp(a1P, 1.25, pull); eP = lerp(eP, 0.3, pull);
+    var a1N = swN + 0.25 * c + 0.3 * s, eN = e0 + 0.2 * Math.max(0, swN);
+    MN.armP.r[0] = -a1P + tr; MN.armP.r[2] = lerp(0, -0.1, pull); MN.foreP.r[0] = -eP;
+    MN.armN.r[0] = -a1N - tr; MN.foreN.r[0] = -eN;
+    MN.head.r[0] = -0.6 * lean + 0.05 * Math.sin(t * 1.3) + 0.03 * Math.sin(2 * ph) * a; MN.head.r[1] = monoHeadYaw.at(t) + tr * 2;
+    MN.cape.r[0] = 0.12 + 0.10 * a + 0.25 * run + 0.02 * Math.sin(t * 2.2);
   }
 
   /* =======================================================
-   *  POSE: THE JANITOR - badan Euler, lengan panjang di-IK
-   *  Lengan diregangkan pada sumbu-y lalu diputar agar ujungnya menuju target.
+   *  POSE: THE JANITOR
+   *  Badan & kaki: kinematika maju (tidak simetris, membungkuk, bergoyang).
+   *  Lengan panjang: IK dua-segmen (bahu - siku - pergelangan) yang meregang;
+   *  siku ditekuk ke arah "pole" dan tiap sendi diputar (bukan sekadar memindah lengan).
    * ======================================================= */
-  var janAccS = 0, janYrS = 0;       // respons pegas (dihitung di badan, dipakai juga oleh lengan)
   function poseJanitorBody(t) {
     resetJan();
-    var K = CH.jan, d = DRV.jan;
-    var sp = janPath.speed(t), a = clamp(sp / 0.45, 0, 1), idle = 1 - a, ph = janPath.dist(t) / 1.0 * TAU, sw = Math.sin(ph), cw = Math.cos(ph);
-    janAccS = soft(spring(d.acc, t, K.sprF, K.sprZ), 1.5); janYrS = soft(spring(d.yr, t, K.sprF * 0.9, K.sprZ), 2.5);
-    var lean = janLean.at(t) + 0.03 * a + K.accLean * janAccS, thw = 0.40 * sw * a;
-    var twist = K.twist * sw * a;                                                     // bahu memuntir mengikuti langkah berat
-    JN.legL.rotation[0] = thw; JN.legR.rotation[0] = -thw;
-    JN.legL.rotation[1] = JN.legR.rotation[1] = -0.8 * twist;
-    // lutut menekuk saat ayunan (kecil: langkah berat/menyeret); sepatu dijaga rata; pinggul mengikuti kaki yang menapak
-    var Kf = 0.45 * a, kL = Kf * Math.pow(Math.max(0, -cw), 1.3) + 0.04 * a, kR = Kf * Math.pow(Math.max(0, cw), 1.3) + 0.04 * a;
-    JN.shinL.rotation[0] = kL; JN.shinR.rotation[0] = kR;
-    JN.shoeL.rotation[0] = -(thw + kL) + 0.25 * Math.max(0, thw); JN.shoeR.rotation[0] = -(-thw + kR) + 0.25 * Math.max(0, -thw);
-    function depth(th, k) { return 0.21 * Math.cos(th) + 0.215 * Math.cos(th + k) + 0.075; }
-    var D = 0.5 - Math.max(depth(thw, kL), depth(-thw, kR));
-    JN.root.position = [K.shift * sw * a, -D + 0.02 * Math.abs(Math.cos(ph)) * a, 0];
-    var H = 0.55, tw = Math.pow(Math.max(0, Math.sin(t * 0.9 + 1.7 * Math.sin(t * 0.37))), 14);   // sentakan kepala singkat & tak teratur
-    var roll = 0.05 * Math.sin(ph) * a + 0.02 * Math.sin(t * 0.5) * idle - K.bank * janYrS;
-    JN.body.rotation = [lean + K.breathA * Math.sin(t * K.breathF) * (1 - 0.5 * a), twist, roll];
+    var sp = janPath.speed(t), a = clamp(sp / 0.45, 0, 1), ph = janPath.dist(t) / 1.0 * TAU;
+    var asym = 1 + 0.15 * Math.sin(ph * 0.5);                                         // langkah tidak simetris
+    var gL = legSolve(ph, a, 0, 0, LEG_JAN), gR = legSolve(ph + Math.PI, a * 0.9, 0, 0, LEG_JAN);
+    var sg = [gL, gR];
+    JN.root.position = [0, Math.max(gL.hipY, gR.hipY) - 0.5 - 0.015 * a * Math.abs(Math.cos(ph)), 0];
+    [['L', gL], ['R', gR]].forEach(function (d) {
+      JN['leg' + d[0]].rotation[0] = -d[1].f1 * asym; JN['shin' + d[0]].rotation[0] = d[1].k; JN['shoe' + d[0]].rotation[0] = d[1].ank;
+    });
+    var lean = janLean.at(t) + 0.03 * a, H = 0.5;
+    JN.body.rotation = [lean, 0.10 * Math.sin(ph) * a, 0.06 * Math.sin(ph) * a + 0.02 * Math.sin(t * 0.6)];
     JN.body.position = [0, H * (1 - Math.cos(lean)), -H * Math.sin(lean)];
-    JN.head.rotation = [JN.head.rotation[0] + janHeadPitch.at(t) - 0.5 * lean + 0.03 * nz(t * 0.4, 11.0) * idle,
-      janHeadYaw.at(t) + 0.12 * Math.sin(t * 0.7) * (1 - a) + 0.7 * d.lead(t) + K.idleHead * 0.5 * nz(t * 0.3, 12.0) * idle - 0.9 * twist,
-      0.04 * Math.sin(t * 0.5) + K.twitch * tw * (0.4 + 0.6 * idle) - 0.5 * roll];
-    JN.hat.rotation = [JN.hat.rotation[0] - 0.10 * janAccS + 0.012 * a * Math.sin(2 * ph), JN.hat.rotation[1], JN.hat.rotation[2] + 0.08 * janYrS];
+    JN.head.rotation = [JN.head.rotation[0] + janHeadPitch.at(t) - 0.5 * lean + 0.04 * Math.sin(2 * ph) * a, janHeadYaw.at(t) + 0.12 * Math.sin(t * 0.7) * (1 - a) - 0.1 * Math.sin(ph) * a, 0.05 * Math.sin(t * 0.5) + 0.04 * Math.sin(ph) * a];
   }
-  // arah & regangan lengan agar ujung (jari) mencapai titik Tl (ruang lokal badan)
-  function aimArm(S_, Tl) {
-    var P = [S_ * 0.22, 1.27, 0], v = LIBS.sub(Tl, P), len = LIBS.length(v);
-    var L = Math.max(len - 0.28, 1.38);
-    var sy = clamp(Math.sqrt(Math.max(L * L - 0.5956, 1.2769)) / 1.13, 1.0, 5.0);
-    return { dir: v.map(function (x) { return x / (len || 1); }), sy: sy };
+  function rotT(R, v) {                                   // R^T * v (R = rotasi 4x4)
+    return [R[0] * v[0] + R[1] * v[1] + R[2] * v[2], R[4] * v[0] + R[5] * v[1] + R[6] * v[2], R[8] * v[0] + R[9] * v[1] + R[10] * v[2]];
+  }
+  var DOWN = [0, -1, 0], HAND_LEN = 0.40, HB = LIBS.rotationX(Math.PI / 2);
+  var POLE = norm([0.6, -0.25, -0.75]);
+  function solveArm(S_, Tf, t) {                          // Tf = ujung jari (ruang lokal badan)
+    var P = [S_ * 0.22, 1.27, 0], v = LIBS.sub(Tf, P), D = LIBS.length(v), d = v.map(function (x) { return x / (D || 1); });
+    var l = 0.55, Dw = Math.max(D - HAND_LEN, 0.25);
+    var s = clamp(Dw / (2 * l) * 1.0, 1, 6);              // regangan (>1 bila target di luar jangkauan)
+    var l1 = l * s, half = Dw / 2, h = Math.sqrt(Math.max(l1 * l1 - half * half, 0));
+    var pole = [S_ * POLE[0], POLE[1], POLE[2]];
+    var pp = LIBS.sub(pole, LIBS.scaleVector(d, LIBS.dot(pole, d)));
+    pp = LIBS.length(pp) < 1e-4 ? [0, 0, -1] : norm(pp);
+    var side = LIBS.cross(d, pp);
+    var wob = 0.07 * Math.sin(t * 1.7 + S_ * 2.0) * (s > 1.05 ? 0.4 : 1);
+    var E = LIBS.add(LIBS.add(P, LIBS.scaleVector(d, half)), LIBS.add(LIBS.scaleVector(pp, h), LIBS.scaleVector(side, wob)));
+    var Wp = LIBS.add(P, LIBS.scaleVector(d, Dw));
+    var u = norm(LIBS.sub(E, P)), f = norm(LIBS.sub(Wp, E)), hd = norm(LIBS.sub(Tf, Wp));
+    var Rs = rotFromTo(DOWN, u), Re = rotFromTo(DOWN, rotT(Rs, f));
+    var Rh = rotFromTo(DOWN, rotT(mul(Rs, Re), hd));
+    var k = S_ < 0 ? 'L' : 'R';
+    JN['arm' + k].matrixOverride = mul(LIBS.translation(P[0], P[1], P[2]), Rs);                  // sendi bahu
+    JN['upper' + k].matrixOverride = LIBS.scaling(1, s, 1);                                      // lengan atas (meregang)
+    JN['elbow' + k].matrixOverride = mul(LIBS.translation(0, -0.55 * s, 0), Re);                // sendi siku
+    JN['fore' + k].matrixOverride = LIBS.scaling(1, s, 1);                                       // lengan bawah (meregang)
+    JN['wrist' + k].matrixOverride = mul(mul(LIBS.translation(0, -0.55 * s, 0), Rh), HB);       // pergelangan + tangan
   }
   var DOOR_R = [[88.0, 8.2, 0.9, -2.6], [91.0, 8.5, 0.9, -3.0], [93.5, 8.5, 0.9, -3.4], [95.5, 8.65, 0.85, -4.0], [97.5, 8.75, 0.85, -4.5], [99.4, 8.75, 0.85, -4.85]];
   var DOOR_L = [[88.0, 7.7, 1.1, -2.4], [92.0, 7.75, 1.4, -3.0], [99.5, 7.75, 1.45, -3.1]];
@@ -437,30 +379,24 @@ window.createAnimation = function (ctx) {
     var wSearch = janSearch.at(t), wReach = janReach.at(t), wDoor = janDoor.at(t);
     var bodyW = mul(mul(M_.jan, JN.root.local()), JN.body.local()), bodyInv = inv4(bodyW);
     [-1, 1].forEach(function (S_) {
-      var node = S_ < 0 ? JN.armL : JN.armR, P = [S_ * 0.22, 1.27, 0];
-      // 1) menggantung / diseret, sedikit mengayun
-      var rh = mul(LIBS.rotationX(0.16 * Math.sin(ph + (S_ > 0 ? 0 : Math.PI)) * a + 0.03 * Math.sin(t * 0.8 + S_) + 0.10 * janAccS), LIBS.rotationZ(S_ * 0.03 + 0.05 * janYrS));
-      var sy = 1.08, dir = norm(tp(rh, norm([S_ * 0.40, -1.13 * sy, 0.66])));
-      var hang = dir.slice();
-      // 2) menyapu lantai
+      var P = [S_ * 0.22, 1.27, 0], sw = Math.sin(ph + (S_ > 0 ? 0 : Math.PI));
+      // 1) menggantung & diseret: ujung jari dekat lantai, mengayun mengikuti langkah
+      var T = [S_ * (0.55 + 0.05 * Math.sin(t * 0.8 + S_)), 0.05, 0.28 + 0.30 * sw * a + 0.05 * Math.sin(t * 0.9 + S_)];
+      // 2) meraba lantai / meja: gerak tidak simetris, perlahan
       if (wSearch > 0.001) {
         var ps = t * 0.9 + (S_ > 0 ? 0 : 2.2);
         var tl = [S_ * (0.30 + 0.60 * Math.sin(ps * 0.8)), 0.08 + 0.30 * Math.max(0, Math.sin(ps * 0.55)), 0.8 + 1.5 * (0.5 + 0.5 * Math.sin(ps))];
-        var r1 = aimArm(S_, tl);
-        dir = norm(LIBS.lerp(dir, r1.dir, wSearch)); sy = lerp(sy, r1.sy, wSearch);
+        T = LIBS.lerp(T, tl, wSearch);
       }
-      // 3) meraih: mengejar Six / celah pintu lift
+      // 3) menjulur: mengejar Six / menyelinap ke celah pintu lift
       if (wReach > 0.001) {
-        var shW = tp(bodyW, P);
-        var chest = [W_.six[0], 0.62, W_.six[2]], dv = LIBS.sub(chest, shW), dist = LIBS.length(dv), Lm = Math.min(janReachLen.at(t), dist);
+        var shW = tp(bodyW, P), chest = [W_.six[0], 0.62, W_.six[2]], dv = LIBS.sub(chest, shW), dist = LIBS.length(dv), Lm = Math.min(janReachLen.at(t), dist);
         var tip = LIBS.add(shW, LIBS.scaleVector(norm(dv), Lm));
         tip[0] += 0.18 * S_ * Math.sin(t * 2.3 + S_); tip[1] += 0.06 * Math.sin(t * 3.1 + S_ * 2);
         if (wDoor > 0.001) tip = LIBS.lerp(tip, keyPoint(S_ < 0 ? DOOR_R : DOOR_L, t), wDoor);
-        var r2 = aimArm(S_, tp(bodyInv, tip));
-        dir = norm(LIBS.lerp(dir, r2.dir, wReach)); sy = lerp(sy, r2.sy, wReach);
+        T = LIBS.lerp(T, tp(bodyInv, tip), wReach);
       }
-      var h = norm([S_ * 0.40, -1.13 * sy, 0.66]);
-      node.matrixOverride = mul(mul(LIBS.translation(P[0], P[1], P[2]), rotFromTo(h, dir)), LIBS.scaling(1, sy, 1));
+      solveArm(S_, T, t);
     });
   }
 
@@ -473,17 +409,19 @@ window.createAnimation = function (ctx) {
 
   function updateProps(t) {
     // lighter + api (lengan kanan Six)
-    // tangan berada di anak node 'fore*': kalikan matriks siku lalu kembalikan ke koordinat lengan (offset tangan tetap berlaku)
-    armRWorld = mul(mul(mul(M_.six, sixRoot.local()), SN.armR.local()), mul(SN.foreR.local(), LIBS.translation(0, -SN.foreR.base.t[1], 0)));
-    armLWorld = mul(mul(mul(M_.six, sixRoot.local()), SN.armL.local()), mul(SN.foreL.local(), LIBS.translation(0, -SN.foreL.base.t[1], 0)));
+    function chain(M, list) { var m = M; for (var i = 0; i < list.length; i++) m = mul(m, list[i].local()); return m; }
+    var sixBase = mul(M_.six, sixRoot.local());
+    // six.js baru: tangan menyatu dengan lengan bawah (foreL/R); telapak ~0.25 di bawah siku
+    handRWorld = mul(chain(sixBase, [SN.torso, SN.armR, SN.foreR]), LIBS.translation(0, -0.24, 0));
+    handLWorld = mul(chain(sixBase, [SN.torso, SN.armL, SN.foreL]), LIBS.translation(0, -0.24, 0));
     var fl = sixFlame.at(t), fk = flick(t, 5.0, 0.35);
-    var hp = tp(armRWorld, [0, -0.56 * 1, 0.02]);
+    var hp = tp(handRWorld, [0, -0.07, 0.02]);
     flamePos = [hp[0], hp[1] + 0.045, hp[2]]; flameK = fl;
     flameFlick = (0.75 + 0.25 * Math.sin(t * 27) * Math.sin(t * 13.1)) * fk;
     lighterOn = sixArmRUp.at(t) > 0.05;
 
     // kunci: di meja -> terbang ke tangan kiri -> dipegang (bergetar saat dicoba masuk)
-    var handM = mul(mul(armLWorld, LIBS.translation(0, -0.52, 0.02)), holdR);
+    var handM = mul(mul(handLWorld, LIBS.translation(0, -0.05, 0.02)), holdR);
     var km;
     if (t < KEY_GRAB) km = keyTableM;
     else if (t < KEY_HELD) km = blendRT(keyTableM, handM, sstep((t - KEY_GRAB) / (KEY_HELD - KEY_GRAB)));
@@ -718,7 +656,7 @@ window.createAnimation = function (ctx) {
     env.drawOpaque();
     Rn.drawTree(sixRoot, M_.six); Rn.drawTree(monoRoot, M_.mono); if (janVisible) Rn.drawTree(janRoot, M_.jan);
     if (lighterOn) {
-      var lm = mul(armRWorld, LIBS.translation(0, -0.5, 0.02));
+      var lm = mul(handRWorld, LIBS.translation(0, -0.045, 0.02));
       Rn.draw(lighterBody, mul(lm, LIBS.translation(0, -0.01, 0)), mLighter); Rn.draw(lighterCap, mul(lm, LIBS.translation(0, 0.038, 0)), mLighterCap);
     }
     // --- bayangan proyeksi planar dari lampu (stencil: tidak gelap ganda) ---

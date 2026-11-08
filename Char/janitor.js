@@ -445,25 +445,7 @@ var Janitor = (function () {
   // ---- BADAN / JAS : cone terpotong + detail kurva (kerah, hem, saku, kancing) ----
   function buildBody() {
     var parts = [], k;
-    // inti (tutup atas/bawah) sedikit lebih kecil + permukaan jas berlipat di atasnya
-    var core = Geo.frustum(JRB * 0.93, JRT * 0.93, JH, 32, tint(COL.jacket, 0.07, 1.1));
-    parts.push(place(core, [0, J0, 0], [0, 0, 0], [1, 1, JZ]));
-    // warna usang: hem menggelap/kotor, noda tak beraturan, variasi kain
-    var jBase = tint(COL.jacket, 0.07, 1.1);
-    var jColor = function (p) {
-      var c = jBase(p), v = p[1] / JH;
-      var st = Math.max(0, Math.sin(p[0] * 13 + p[1] * 7) * Math.sin(p[2] * 11 - p[1] * 5));
-      var k = 1 - 0.30 * Math.pow(1 - v, 3) - 0.16 * st * st - 0.05 * Math.max(0, Math.sin(p[1] * 60 + p[0] * 9));
-      return [c[0] * k, c[1] * k, c[2] * k];
-    };
-    var jacket = Geo.surface(function (u, v) {
-      var th = -2 * PI * u, a = ((th % (2 * PI)) + 2 * PI) % (2 * PI), y = v * JH;
-      var calm = 1 - 0.95 * Math.exp(-Math.pow((a - PI / 2) / 0.9, 2));       // depan (kancing/saku/kelim) tetap rata
-      var f = 0.035 * (0.3 + 0.7 * (1 - v)) * calm * (Math.sin(6 * th + 0.5) + 0.6 * Math.sin(11 * th + 1.7) + 0.35 * Math.sin(3 * th + 2.2)) +
-              0.012 * (1 - v) * calm * Math.sin(v * 40 + 3 * th);             // lipatan vertikal + kerutan horizontal
-      var r = jr(J0 + y) * (1 + f);
-      return [r * Math.cos(th), y, r * Math.sin(th)];
-    }, 96, 14, jColor);
+    var jacket = Geo.frustum(JRB, JRT, JH, 48, tint(COL.jacket, 0.07, 1.1));
     parts.push(place(jacket, [0, J0, 0], [0, 0, 0], [1, 1, JZ]));
 
     // hem bawah (loop Bezier)
@@ -528,68 +510,49 @@ var Janitor = (function () {
   }
 
   // ---- KAKI (cylinder pendek) & SEPATU (ellipsoid) ----
-  // Kaki dibagi di lutut (y=-0.21 dari pivot pinggul): paha di node kaki, betis + sepatu di node 'shin*'.
-  function buildLeg() {
-    var pc = tint(COL.pants, 0.06, 1.2);
-    return Geo.merge([
-      place(Geo.cylinder(0.085, 0.21, 20, pc), [0, -0.21, 0]),
-      place(Geo.ellipsoid(0.088, 0.088, 0.088, 10, 14, pc), [0, -0.21, 0])          // sendi lutut
-    ]);
+  /* ---- KAKI: paha (pivot pinggul) -> betis (pivot lutut) -> sepatu (pivot pergelangan) ---- */
+  var LEG1 = 0.21, LEG2 = 0.21;
+  function buildThigh() {
+    var pants = tint(COL.pants, 0.06, 1.2);
+    return Geo.merge([place(Geo.cylinder(0.085, LEG1, 20, pants), [0, -LEG1, 0])]);
   }
   function buildShin() {
-    var pc = tint(COL.pants, 0.06, 1.2);
-    return Geo.merge([
-      place(Geo.cylinder(0.085, 0.21, 20, pc), [0, -0.21, 0]),
-      place(Geo.cylinder(0.096, 0.045, 20, tint(COL.jacketDk, 0.08, 1.4), false), [0, -0.21, 0])   // manset celana usang
-    ]);
+    var pants = tint(COL.pants, 0.06, 1.2);
+    return Geo.merge([place(Geo.cylinder(0.082, LEG2, 20, pants), [0, -LEG2, 0]),
+      place(Geo.ellipsoid(0.088, 0.088, 0.088, 14, 18, pants), [0, 0, 0])]);      // bola lutut (menutup celah saat menekuk)
   }
   function buildShoe() {
-    return Geo.ellipsoid(0.115, 0.075, 0.19, 18, 24, tint(COL.shoe, 0.10, 1.5));
+    return place(Geo.ellipsoid(0.115, 0.075, 0.19, 18, 24, tint(COL.shoe, 0.10, 1.5)), [0, -0.005, 0.07]);
   }
 
-  // ---- LENGAN PANJANG : tube mengikuti kurva Bezier ----
-  function buildArm(S) {
-    var shoulder = [S * 0.22, 1.27, 0];
-    var world = [[0.22, 1.27, 0.0], [0.45, 1.27, 0.0], [0.62, 1.05, 0.06],
-                 [0.70, 0.70, 0.20], [0.68, 0.38, 0.42], [0.62, 0.14, 0.66]];
-    var pts = world.map(function (p) { return [S * p[0] - shoulder[0], p[1] - shoulder[1], p[2] - shoulder[2]]; });
-    var curve = Geo.spline(pts, false);
-
-    // lengan: radius mengecil ke pergelangan, kerutan kain makin banyak di ujung
-    var arm = Geo.tube(curve, function (t, a) {
-      return (0.078 - 0.026 * t) * (1 + (0.05 + 0.12 * t * t) * Math.sin(t * 60 + a * 2));
-    }, 180, 20, tint(COL.sleeve, 0.06, 1.1), { hint: [0, 0, 1] });
-
-    var parts = [arm];
-
-    // ujung lengan (manset): loop kurva Bezier tertutup, 2 lilitan
-    var E = curve(1), T = V.norm(V.sub(curve(1), curve(0.985)));
-    var ref = Math.abs(T[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0];
-    var cn = V.norm(V.cross(T, ref)), cb = V.cross(T, cn);
-    [0, 1].forEach(function (L) {
-      var c0 = V.sub(E, V.mul(T, 0.045 * L)), loop = [], k;
+  /* ---- LENGAN PANJANG: bahu -> lengan atas -> siku -> lengan bawah -> pergelangan -> tangan ----
+   * tiap segmen = tube kurva Bezier lurus sepanjang -y (panjang istirahat ARM1/ARM2);
+   * panjangnya diregangkan lewat skala sumbu-y oleh IK (Anim) agar bisa menjulur.            */
+  var ARM1 = 0.55, ARM2 = 0.55;
+  function segmentTube(r0, r1, bow, wr, color) {
+    var curve = Geo.spline([[0, 0, 0], [0, -0.33 * ARM1, bow], [0, -0.66 * ARM1, bow], [0, -ARM1, 0]], false);
+    return Geo.tube(curve, function (t, a) {
+      return (r0 + (r1 - r0) * t) * (1 + (0.04 + wr * t * t) * Math.sin(t * 46 + a * 2));
+    }, 120, 18, color, { hint: [0, 0, 1] });
+  }
+  function buildArmParts(S) {
+    var sleeve = tint(COL.sleeve, 0.06, 1.1);
+    var shoulder = Geo.ellipsoid(0.092, 0.092, 0.092, 14, 18, sleeve);
+    var parts = [segmentTube(0.080, 0.072, 0.02, 0.05, sleeve)];
+    if (S < 0) parts.push(place(Geo.cylinder(0.090, 0.10, 24, COL.band), [0, -0.30, 0]));      // ban lengan hitam di lengan kiri
+    var upper = Geo.merge(parts);
+    var elbow = Geo.ellipsoid(0.076, 0.076, 0.076, 12, 16, sleeve);
+    var fparts = [segmentTube(0.070, 0.050, 0.025, 0.12, sleeve)];
+    [0, 1].forEach(function (L) {                                           // manset: loop kurva Bezier tertutup, 2 lilitan
+      var c0 = [0, -ARM1 + 0.045 * L, 0], loop = [], k;
       for (k = 0; k < 10; k++) {
-        var a = 2 * PI * k / 10, rc = (0.062 + 0.004 * L) * (1 + 0.10 * Math.sin(3 * a + L));
-        loop.push(V.add(V.add(c0, V.mul(T, 0.008 * Math.sin(2 * a))),
-                        V.add(V.mul(cn, rc * Math.cos(a)), V.mul(cb, rc * Math.sin(a)))));
+        var a = 2 * PI * k / 10, rc = (0.060 + 0.004 * L) * (1 + 0.10 * Math.sin(3 * a + L));
+        loop.push([c0[0] + rc * Math.cos(a), c0[1] + 0.008 * Math.sin(2 * a), c0[2] + rc * Math.sin(a)]);
       }
-      parts.push(Geo.tube(Geo.spline(loop, true), function (t, a) { return 0.019 * (1 + 0.15 * Math.sin(t * 20 + a)); },
+      fparts.push(Geo.tube(Geo.spline(loop, true), function (t, a) { return 0.019 * (1 + 0.15 * Math.sin(t * 20 + a)); },
         60, 8, tint(COL.jacketDk, 0.07), { closed: true, center: c0 }));
     });
-
-    // ban lengan hitam di lengan kiri (cylinder, mengikuti tangen kurva)
-    if (S < 0) {
-      var Pb = curve(0.10), Tb = V.norm(V.sub(curve(0.105), curve(0.095)));
-      parts.push(Geo.transform(Geo.cylinder(1, 1, 24, COL.band),
-        LIBS.segmentMatrix(V.sub(Pb, V.mul(Tb, 0.04)), V.add(Pb, V.mul(Tb, 0.04)), 0.092)));
-    }
-
-    // orientasi tangan di ujung lengan
-    var hz = V.norm([T[0], T[1] * 0.45, T[2]]);
-    var up = [0, 1, 0];
-    var hy = V.norm(V.sub(up, V.mul(hz, V.dot(up, hz))));
-    var hx = V.cross(hy, hz);
-    return { mesh: Geo.merge(parts), shoulder: shoulder, wristBase: LIBS.basis(hx, hy, hz, E) };
+    return { shoulder: shoulder, upper: upper, elbow: elbow, fore: Geo.merge(fparts) };
   }
 
   // ---- TELAPAK TANGAN : tube pipih mengikuti kurva Bezier ----
@@ -658,14 +621,16 @@ var Janitor = (function () {
     var body = root.add(reg(node('body', buildBody(), 10)));
     body.add(reg(node('neck', buildNeck(), 12)));
 
-    // kaki + sepatu
+    // kaki: paha -> betis -> sepatu (masing-masing punya pivot sendiri)
+    var thighMesh = buildThigh(), shinMesh = buildShin(), shoeMesh = buildShoe();
     [-1, 1].forEach(function (s) {
-      var leg = root.add(reg(node(s < 0 ? 'legL' : 'legR', buildLeg(), 8)));
+      var k = s < 0 ? 'L' : 'R';
+      var leg = root.add(reg(node('leg' + k, thighMesh, 8)));
       leg.position = [s * 0.14, 0.5, 0];
-      var shin = leg.add(reg(node(s < 0 ? 'shinL' : 'shinR', buildShin(), 8)));
-      shin.position = [0, -0.21, 0];
-      var shoe = shin.add(reg(node(s < 0 ? 'shoeL' : 'shoeR', buildShoe(), 30)));
-      shoe.position = [0, -0.215, 0.07];
+      var shin = leg.add(reg(node('shin' + k, shinMesh, 8)));
+      shin.position = [0, -LEG1, 0];
+      var shoe = shin.add(reg(node('shoe' + k, shoeMesh, 30)));
+      shoe.position = [0, -LEG2, 0];
     });
 
     // kepala (pivot di leher)
@@ -684,16 +649,20 @@ var Janitor = (function () {
     hat.position = [0, HOFF + 0.52, 0];
     hat.rotation = [LIBS.degToRad(4), 0, LIBS.degToRad(8)];
 
-    // lengan panjang + tangan + jari
+    // lengan panjang: bahu(arm) -> upper -> siku(elbow) -> fore -> pergelangan(wrist) -> telapak + jari
     var palmMesh = buildPalm();
     [-1, 1].forEach(function (s) {
-      var A = buildArm(s), side = s < 0 ? 'L' : 'R';
-      var arm = body.add(reg(node('arm' + side, A.mesh, 8)));
-      arm.position = A.shoulder;
-      var wrist = arm.add(reg(node('wrist' + side, null)));
-      wrist.base = A.wristBase;
+      var A = buildArmParts(s), side = s < 0 ? 'L' : 'R';
+      var arm = body.add(reg(node('arm' + side, A.shoulder, 8)));
+      arm.position = [s * 0.22, 1.27, 0];
+      var upper = arm.add(reg(node('upper' + side, A.upper, 8)));
+      var elbow = arm.add(reg(node('elbow' + side, A.elbow, 8)));        // sendi siku (anak bahu; posisi diatur IK)
+      elbow.position = [0, -ARM1, 0];
+      var fore = elbow.add(reg(node('fore' + side, A.fore, 8)));
+      var wrist = elbow.add(reg(node('wrist' + side, null)));
+      wrist.position = [0, -ARM2, 0];
+      wrist.rotation = [Math.PI / 2, 0, 0];                                 // tangan menunjuk searah lengan bawah (-y)
       wrist.add(reg(node('palm' + side, palmMesh, 14)));
-      // 4 jari panjang + ibu jari (cylinder kecil mengikuti Bezier)
       var fingers = [
         { n: 'index',  bx: -0.040 * s, L: 0.30, sp: -0.018 * s, drop: 0.03 },
         { n: 'middle', bx: -0.013 * s, L: 0.34, sp: -0.004 * s, drop: 0.03 },
