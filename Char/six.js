@@ -404,64 +404,10 @@ function buildScene() {
     nodes: { head: head, hood: hood, armL: armL, armR: armR, legL: legL, legR: legR } };
 }
 
+/* Model Six = pohon SceneNode murni (tanpa three.js). Renderer menggambar node.soup. */
 window.createSixModel = function () {
   var source = buildScene();
-  var group = new THREE.Group();
-  var triangleCount = 0;
-  var groups = {};
-
-  function addNode(node, parent) {
-    var container = new THREE.Group();
-    container.matrixAutoUpdate = false;
-    container.matrix.fromArray(node.local());
-    groups[node.name] = container;
-    parent.add(container);
-
-    if (node.soup) {
-      var geometry = new THREE.BufferGeometry();
-      geometry.setAttribute('position', new THREE.Float32BufferAttribute(node.soup.p, 3));
-      geometry.setAttribute('normal', new THREE.Float32BufferAttribute(node.soup.n, 3));
-      geometry.setAttribute('color', new THREE.Float32BufferAttribute(node.soup.c, 3));
-      var material = new THREE.MeshStandardMaterial({
-        vertexColors: true,
-        roughness: 0.72,
-        side: THREE.DoubleSide
-      });
-      container.add(new THREE.Mesh(geometry, material));
-      triangleCount += node.soup.p.length / 9;
-    }
-
-    node.kids.forEach(function (child) { addNode(child, container); });
-  }
-
-  addNode(source.root, group);
-
-  /* ---- RIG: dipakai Anim.js untuk menggerakkan anggota badan ----
-   * nodes.<nama>.t / .r diubah tiap frame, lalu rig.sync() menyalin ke Three.js.
-   * rig.reset() mengembalikan semua node ke pose awal.            */
-  var animated = ['six', 'head', 'hood', 'armL', 'armR', 'legL', 'legR'];
-  var nodeOf = { six: source.root, head: source.nodes.head, hood: source.nodes.hood,
-    armL: source.nodes.armL, armR: source.nodes.armR, legL: source.nodes.legL, legR: source.nodes.legR };
-  var rig = {
-    nodes: nodeOf,
-    groups: groups,
-    reset: function () {
-      animated.forEach(function (k) {
-        var n = nodeOf[k];
-        n.t = n.base.t.slice();
-        n.r = n.base.r.slice();
-        n.s = [1, 1, 1];
-      });
-      source.root.t = [0, 0, 0]; source.root.r = [0, 0, 0];
-    },
-    sync: function () {
-      animated.forEach(function (k) {
-        groups[k].matrix.fromArray(nodeOf[k].local());
-        groups[k].matrixWorldNeedsUpdate = true;
-      });
-    }
-  };
-  return { group: group, triangleCount: triangleCount, rig: rig };
+  return { root: source.root, nodes: source.nodes };
 };
 
 /* =========================================================

@@ -2,8 +2,8 @@
  * mono.js  -  Karakter "Mono" (Little Nightmares)
  *
  * Semua geometri dibangkitkan manual (array posisi / normal / index),
- * TANPA THREE.SphereGeometry / CylinderGeometry / TubeGeometry / dst.
- * THREE hanya dipakai sebagai wadah akhir (Group, BufferGeometry, Mesh).
+ * TANPA library geometri apa pun (tidak ada three.js).
+ * Hasil akhirnya berupa pohon node + array vertex untuk renderer WebGL (GL.js).
  *
  * JENIS OBJEK YANG DIPAKAI
  *   1. Ellipsoid (quadric)                  : telapak tangan, kancing
@@ -18,7 +18,6 @@ window.createMonoModel = function () {
     'use strict';
 
     const PI = Math.PI;
-    const character = new THREE.Group();
 
     /* ==========================================================
      *  BAGIAN 1 : MATEMATIKA KECIL
@@ -554,21 +553,17 @@ window.createMonoModel = function () {
     coatContext.fill();
     coatContext.restore();
 
-    const coatTexture = new THREE.CanvasTexture(coatCanvas);
-    coatTexture.wrapS = THREE.RepeatWrapping;
-    coatTexture.wrapT = THREE.RepeatWrapping;
-    coatTexture.encoding = THREE.sRGBEncoding;
+    const hex = h => [((h >> 16) & 255) / 255, ((h >> 8) & 255) / 255, (h & 255) / 255];
     const mats = {
-        coat:     new THREE.MeshStandardMaterial({ color: 0xffffff, map: coatTexture, roughness: 1 }),
-        cape:     new THREE.MeshStandardMaterial({ color: 0x222033, roughness: 1 }),
-        inner:    new THREE.MeshStandardMaterial({ color: 0x17171d, roughness: 1 }),
-        cloth:    new THREE.MeshStandardMaterial({ color: 0x34343c, roughness: 1 }),
-        bag:      new THREE.MeshStandardMaterial({ color: 0x625b57, roughness: 1 }),
-        head:     new THREE.MeshStandardMaterial({ color: 0x393437, roughness: 1 }),
-        eye:      new THREE.MeshBasicMaterial({ color: 0x080916 }),
-        skin:     new THREE.MeshStandardMaterial({ color: 0x514b49, roughness: 1 })
+        coat:  { color: [1, 1, 1], tex: 'coat', spec: 0.02 },
+        cape:  { color: hex(0x222033) },
+        inner: { color: hex(0x17171d) },
+        cloth: { color: hex(0x34343c) },
+        bag:   { color: hex(0x625b57) },
+        head:  { color: hex(0x393437) },
+        eye:   { color: hex(0x080916), unlit: true },
+        skin:  { color: hex(0x514b49) }
     };
-    Object.keys(mats).forEach(k => { mats[k].side = THREE.DoubleSide; });
 
     // satu slot = satu mesh akhir (geometri bermaterial sama digabung)
     const slots = {
@@ -652,59 +647,40 @@ window.createMonoModel = function () {
         }
     });
 
-    /* ==========================================================
-     *  BAGIAN 6 : BUNGKUS KE THREE.JS
-     * ========================================================== */
+    function MNode(name, t) {
+        this.name = name; this.t = t ? t.slice() : [0, 0, 0]; this.r = [0, 0, 0]; this.s = [1, 1, 1];
+        this.base = { t: this.t.slice(), r: [0, 0, 0] };
+        this.kids = []; this.meshes = [];
+    }
+    MNode.prototype.add = function (k) { this.kids.push(k); return k; };
+    MNode.prototype.local = function () { return LIBS.compose(this.t, this.r, this.s); };
+
     // pivot (sendi) tiap bagian, koordinat model Mono
     const PIVOT = {
-        torso: [0, 0, 0],
         head:  [0, 2.1, 0],
         armP:  [0.36, 1.9, 0.02],
         armN:  [-0.36, 1.9, 0.02],
         legP:  [0.19, 0.9, 0.07],
         legN:  [-0.19, 0.9, 0.07]
     };
-    const hips = new THREE.Group();          // badan atas: torso + kepala + lengan (bisa naik-turun)
-    hips.name = 'mono_hips';
-    character.add(hips);
-    const parts = { hips: hips };
-    Object.keys(PIVOT).forEach(p => {
-        if (p === 'torso') { parts.torso = hips; return; }
-        const g = new THREE.Group();
-        g.name = 'mono_' + p;
-        g.position.set(PIVOT[p][0], PIVOT[p][1], PIVOT[p][2]);
-        (p.indexOf('leg') === 0 ? character : hips).add(g);
-        parts[p] = g;
-    });
-    parts.legBase = { legP: PIVOT.legP.slice(), legN: PIVOT.legN.slice() };
+    const root = new MNode('mono');
+    const hips = root.add(new MNode('hips'));          // badan atas: torso + kepala + lengan
+    const nodes = { root: root, hips: hips };
+    ['head', 'armP', 'armN'].forEach(p => { nodes[p] = hips.add(new MNode(p, PIVOT[p])); });
+    ['legP', 'legN'].forEach(p => { nodes[p] = root.add(new MNode(p, PIVOT[p])); });
+    nodes.cape = hips.add(new MNode('cape', [0, 1.9, 0.12]));
+    nodes.cape.r[0] = 0.12; nodes.cape.base.r[0] = 0.12;
 
     Object.keys(pieces).forEach(key => {
         const part = key.split('|')[0], name = key.split('|')[1];
         const g = pieces[key];
-        const pv = PIVOT[part];
-        const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute('position', new THREE.Float32BufferAttribute(g.pos, 3));
-        geometry.setAttribute('normal', new THREE.Float32BufferAttribute(g.nor, 3));
-        geometry.setAttribute('uv', new THREE.Float32BufferAttribute(g.uv, 2));
-        geometry.setIndex(g.idx);
-        if (part !== 'torso') geometry.translate(-pv[0], -pv[1], -pv[2]);
-        const mesh = new THREE.Mesh(geometry, mats[slots[name].mat]);
-        mesh.name = 'mono_' + part + '_' + name;
-        mesh.castShadow = true;
-        if (name === 'cape') {
-            const pivot = new THREE.Group();
-            pivot.name = 'mono_cape_pivot';
-            pivot.position.set(0, 1.9, 0.12);
-            pivot.rotation.x = 0.12;
-            mesh.position.y = -1.9;
-            pivot.add(mesh);
-            hips.add(pivot);
-            parts.cape = pivot;
-        } else {
-            parts[part].add(mesh);
-        }
+        let off = [0, 0, 0], target = hips;
+        if (name === 'cape') { off = [0, 1.9, 0]; target = nodes.cape; }       // pivot jubah di bahu
+        else if (part !== 'torso') { off = PIVOT[part]; target = nodes[part]; }
+        const pos = new Float32Array(g.pos.length);
+        for (let i = 0; i < pos.length; i += 3) { pos[i] = g.pos[i] - off[0]; pos[i + 1] = g.pos[i + 1] - off[1]; pos[i + 2] = g.pos[i + 2] - off[2]; }
+        target.meshes.push({ pos: pos, nor: new Float32Array(g.nor), uv: new Float32Array(g.uv), idx: g.idx, mat: mats[slots[name].mat] });
     });
-    character.userData.rig = parts;
+    return { root: root, nodes: nodes, textures: { coat: coatCanvas } };
 
-    return character;
 };

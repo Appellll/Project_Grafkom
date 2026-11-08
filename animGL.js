@@ -1,5 +1,5 @@
 /* =========================================================
- *  Anim.js  -  Timeline "Little Nightmares" (100 detik)
+ *  AnimGL.js - Timeline "Little Nightmares" (100 detik) untuk WebGL mentah
  *
  *  Scene 1  0:00-0:15  A Dark Beginning
  *  Scene 2  0:15-0:35  The Janitor Appears
@@ -7,11 +7,11 @@
  *  Scene 4  1:00-1:25  The Chase
  *  Scene 5  1:25-1:40  The Last Escape
  *
- *  Arah hadap (yaw, radian):  E=+x  N=-z (dinding belakang)  W=-x  S=+z (kamera)
- *  Semua nilai animasi ada di blok "DATA TIMELINE" di bawah -> mudah diatur.
+ *  Yaw (radian): E=+x  N=-z (dinding belakang)  W=-x  S=+z (kamera)
+ *  Semua waktu/posisi/kamera ada di blok DATA TIMELINE & SHOTS.
  * ========================================================= */
 window.createAnimation = function (ctx) {
-  var scene = ctx.scene, env = ctx.env, sfx = ctx.sfx;
+  var env = ctx.env, sfx = ctx.sfx;
   var DUR = 100;
   var E = Math.PI / 2, N = Math.PI, W = Math.PI * 1.5, S = 0, TAU = Math.PI * 2;
 
@@ -144,312 +144,290 @@ window.createAnimation = function (ctx) {
   var UNLOCK_T = 84.0;
 
   /* =======================================================
+   *  MATEMATIKA MATRIKS (array 16 column-major, bersama LIBS)
+   * ======================================================= */
+  var I4 = LIBS.identity, mul = LIBS.multiply, tp = LIBS.transformPoint, norm = LIBS.normalize;
+  function inv4(a) {                              // invers matriks 4x4 (column-major)
+    var a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3], a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7],
+      a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11], a30 = a[12], a31 = a[13], a32 = a[14], a33 = a[15];
+    var b00 = a00 * a11 - a01 * a10, b01 = a00 * a12 - a02 * a10, b02 = a00 * a13 - a03 * a10, b03 = a01 * a12 - a02 * a11, b04 = a01 * a13 - a03 * a11, b05 = a02 * a13 - a03 * a12,
+      b06 = a20 * a31 - a21 * a30, b07 = a20 * a32 - a22 * a30, b08 = a20 * a33 - a23 * a30, b09 = a21 * a32 - a22 * a31, b10 = a21 * a33 - a23 * a31, b11 = a22 * a33 - a23 * a32;
+    var det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+    det = 1 / (det || 1e-9);
+    return [
+      (a11 * b11 - a12 * b10 + a13 * b09) * det, (a02 * b10 - a01 * b11 - a03 * b09) * det, (a31 * b05 - a32 * b04 + a33 * b03) * det, (a22 * b04 - a21 * b05 - a23 * b03) * det,
+      (a12 * b08 - a10 * b11 - a13 * b07) * det, (a00 * b11 - a02 * b08 + a03 * b07) * det, (a32 * b02 - a30 * b05 - a33 * b01) * det, (a20 * b05 - a22 * b02 + a23 * b01) * det,
+      (a10 * b10 - a11 * b08 + a13 * b06) * det, (a01 * b08 - a00 * b10 - a03 * b06) * det, (a30 * b04 - a31 * b02 + a33 * b00) * det, (a21 * b02 - a20 * b04 - a23 * b00) * det,
+      (a11 * b07 - a10 * b09 - a12 * b06) * det, (a00 * b09 - a01 * b07 + a02 * b06) * det, (a31 * b01 - a30 * b03 - a32 * b00) * det, (a20 * b03 - a21 * b01 + a22 * b00) * det
+    ];
+  }
+  // rotasi 4x4 yang memutar vektor satuan a menjadi b
+  function rotFromTo(a, b) {
+    var v = LIBS.cross(a, b), c = LIBS.dot(a, b);
+    if (c < -0.9999) return LIBS.rotationX(Math.PI);
+    var k = 1 / (1 + c);
+    return [c + k * v[0] * v[0], k * v[0] * v[1] + v[2], k * v[0] * v[2] - v[1], 0,
+      k * v[0] * v[1] - v[2], c + k * v[1] * v[1], k * v[1] * v[2] + v[0], 0,
+      k * v[0] * v[2] + v[1], k * v[1] * v[2] - v[0], c + k * v[2] * v[2], 0, 0, 0, 0, 1];
+  }
+  function actorMatrix(p, yaw, s) { return mul(mul(LIBS.translation(p[0], 0, p[1]), LIBS.rotationY(yaw)), LIBS.scaling(s, s, s)); }
+  // campur dua matriks rotasi+translasi lalu orthonormalkan sumbunya
+  function blendRT(a, b, u) {
+    var o = new Array(16), i;
+    for (i = 0; i < 16; i++) o[i] = a[i] + (b[i] - a[i]) * u;
+    var x = norm([o[0], o[1], o[2]]), y = [o[4], o[5], o[6]], z = norm(LIBS.cross(x, y)); y = LIBS.cross(z, x);
+    o[0] = x[0]; o[1] = x[1]; o[2] = x[2]; o[4] = y[0]; o[5] = y[1]; o[6] = y[2]; o[8] = z[0]; o[9] = z[1]; o[10] = z[2];
+    return o;
+  }
+
+  /* =======================================================
    *  AKTOR
    * ======================================================= */
-  var stage = new THREE.Group(); scene.add(stage);
-  function makeActor(model, scl) { var g = new THREE.Group(); model.scale.setScalar(scl); g.add(model); stage.add(g); return g; }
-  var sixM = ctx.six.group, sixRig = ctx.six.rig;
-  var actorSix = makeActor(sixM, 0.78);
-  var actorMono = makeActor(ctx.mono, 0.49);
-  var actorJan = makeActor(ctx.jan, 0.95);
-  var monoRig = ctx.mono.userData.rig, janRig = ctx.jan.userData.rig;
-  [sixM, ctx.mono, ctx.jan].forEach(function (m) {
-    m.traverse(function (o) { if (o.isMesh) { o.castShadow = true; o.receiveShadow = false; } });
-  });
+  var Rn = ctx.R, GeoX = window.LNGeo;
+  var sixRoot = ctx.six.root, SN = ctx.six.nodes;
+  SN.six = sixRoot;
+  var monoRoot = ctx.mono.root, MN = ctx.mono.nodes;
+  var janRoot = ctx.jan.root, JN = ctx.jan.nodes;
+  Rn.prepSix(sixRoot); Rn.prepJanitor(janRoot); Rn.prepMono(monoRoot, ctx.mono.textures);
+  var SCALE = { six: 0.78, mono: 0.49, jan: 0.95 };
+  var M_ = { six: I4(), mono: I4(), jan: I4() };        // matriks dunia tiap aktor
+  var P_ = { six: [0, 0], mono: [0, 0], jan: [0, 0] };  // posisi lantai (x, z)
+  var W_ = { six: [0, 0.7, 0], mono: [0, 0.6, 0], jan: [0, 1.2, 0] };
+  var janVisible = false;
+  var lastStep = { six: 0, mono: 0, jan: 0 }, lastEvt = 0;
+  var camEye = [0, 1, 5];
 
-  /* ---------------- props: lighter, kunci, kaleng ---------------- */
-  var lighter = new THREE.Group();
-  var lBody = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.075, 0.016), new THREE.MeshStandardMaterial({ color: 0x8a8d90, metalness: 0.8, roughness: 0.35 }));
-  lBody.position.y = -0.01; lighter.add(lBody);
-  var lCap = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.02, 0.018), new THREE.MeshStandardMaterial({ color: 0x55575a, metalness: 0.8, roughness: 0.4 }));
-  lCap.position.y = 0.038; lighter.add(lCap);
-  lighter.position.set(0, -0.5, 0.02); lighter.rotation.x = Math.PI / 2 * 0.0;
-  sixRig.groups.armR.add(lighter);
+  var SIX_NAMES = ['six', 'head', 'hood', 'armL', 'armR', 'legL', 'legR'];
+  function resetSix() { SIX_NAMES.forEach(function (k) { var n = SN[k]; n.t = n.base.t.slice(); n.r = n.base.r.slice(); n.s = [1, 1, 1]; }); sixRoot.t = [0, 0, 0]; sixRoot.r = [0, 0, 0]; }
+  var MONO_NAMES = ['hips', 'head', 'armP', 'armN', 'legP', 'legN', 'cape'];
+  function resetMono() { MONO_NAMES.forEach(function (k) { var n = MN[k]; n.t = n.base.t.slice(); n.r = n.base.r.slice(); n.s = [1, 1, 1]; }); }
+  var JAN_NAMES = ['root', 'body', 'head', 'hat', 'legL', 'legR'], janRest = {};
+  JAN_NAMES.forEach(function (k) { var n = JN[k]; janRest[k] = { p: n.position.slice(), r: n.rotation.slice(), s: n.scale.slice() }; });
+  function resetJan() { JAN_NAMES.forEach(function (k) { var n = JN[k]; n.position = janRest[k].p.slice(); n.rotation = janRest[k].r.slice(); n.scale = janRest[k].s.slice(); }); }
 
-  var flame = new THREE.Group(); scene.add(flame);
-  var flameMat = new THREE.MeshBasicMaterial({ color: 0xffb040, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
-  var flameMesh = new THREE.Mesh(new THREE.SphereGeometry(0.02, 10, 8), flameMat);
-  flameMesh.scale.set(0.8, 1.9, 0.8); flame.add(flameMesh);
-  var flameCore = new THREE.Mesh(new THREE.SphereGeometry(0.011, 8, 6), new THREE.MeshBasicMaterial({ color: 0xfff2c0, transparent: true, opacity: 0.95, depthWrite: false }));
-  flameCore.scale.set(0.8, 1.7, 0.8); flame.add(flameCore);
-  var flameLight = new THREE.PointLight(0xff9a3c, 0, 6.5, 1.7); flame.add(flameLight);
+  /* ---------------- props: lighter, api ---------------- */
+  var lighterBody = Rn.mesh(GeoX.box(0.03, 0.075, 0.016, 1, 1)), lighterCap = Rn.mesh(GeoX.box(0.032, 0.02, 0.018, 1, 1));
+  var mLighter = { color: [0.54, 0.55, 0.56], spec: 0.5, shin: 40 }, mLighterCap = { color: [0.33, 0.34, 0.35], spec: 0.5, shin: 40 };
+  var flameGeo = Rn.mesh(GeoX.sphere(1, 1, 1, 10, 12));
+  var armRWorld = I4(), armLWorld = I4(), flamePos = [0, 0, 0], flameK = 0, flameFlick = 1;
 
-  /* ---------------- lampu ---------------- */
-  var amb = new THREE.AmbientLight(0x3a3426, 0.8); scene.add(amb);
-  var hemi = new THREE.HemisphereLight(0x55556a, 0x1c150d, 0.45); scene.add(hemi);
-  var rim = new THREE.DirectionalLight(0x6c7a99, 0.35); rim.position.set(-6, 8, 8); scene.add(rim);
-  function pointLamp(lamp, color, dist) { var l = new THREE.PointLight(color, 0, dist, 1.6); l.position.copy(lamp.pos); scene.add(l); return l; }
-  var lightLeft = pointLamp(env.lamps.left, 0xffd08a, 11);
-  var lightMid = pointLamp(env.lamps.mid, 0xffd9a0, 11);
-  var lightDoor = pointLamp(env.lamps.door, 0xffcf90, 10);
-  var spot = new THREE.SpotLight(0xffddaa, 0, 11, 0.95, 0.75, 1.4);
-  spot.position.copy(env.lamps.table.pos); spot.target.position.set(env.table.x, 0.3, env.table.z + 0.4);
-  spot.castShadow = true; spot.shadow.mapSize.set(1024, 1024); spot.shadow.bias = -0.0006; spot.shadow.normalBias = 0.03;
-  scene.add(spot); scene.add(spot.target);
-
-  function flick(t, seed, amt) {                 // 1 = terang penuh; amt = seberapa parah berkedip
+  function flick(t, seed, amt) {
     var slot = Math.floor(t * 11 + seed * 7), r = hash(slot + seed);
     var dip = r > 0.8 ? 0.08 + 0.5 * hash(slot * 3.3 + seed) : 1;
     var micro = 0.9 + 0.1 * Math.sin(t * 53 + seed * 3) * Math.sin(t * 19.7);
     return 1 - amt * (1 - dip * micro);
   }
-  function setBulb(lamp, k) { lamp.bulbMat.emissiveIntensity = 2.4 * k; }
-
-  /* ---------------- keadaan runtime ---------------- */
-  var W_ = { six: new THREE.Vector3(), mono: new THREE.Vector3(), jan: new THREE.Vector3() };
-  var tmpV = new THREE.Vector3(), tmpV2 = new THREE.Vector3(), tmpQ = new THREE.Quaternion(), tmpQ2 = new THREE.Quaternion(),
-    tmpE = new THREE.Euler(), tmpM = new THREE.Matrix4(), tmpS = new THREE.Vector3(), tmpP = new THREE.Vector3();
-  var lastStep = { six: 0, mono: 0, jan: 0 }, lastEvt = 0, evtDone = {};
 
   /* =======================================================
-   *  POSE: SIX  (Euler per node; rig.nodes.<n>.r = [x, y, z])
+   *  POSE: SIX  (Euler per node)
    * ======================================================= */
   function poseSix(t) {
-    var R = sixRig, Nn = R.nodes;
-    R.reset();
+    resetSix();
     var sp = sixPath.speed(t), a = clamp(sp / 0.6, 0, 1), run = clamp((sp - 1.3) / 0.5, 0, 1);
     var c = sixCrouch.at(t), ph = sixPath.dist(t) / 0.62 * TAU, sw = Math.sin(ph);
     var s = sixScared.at(t), tr = (hash(Math.floor(t * 30)) - 0.5) * 0.03 * s;
-
     var lean = 0.05 * a + 0.20 * run + 0.42 * c;
     var amp = (0.30 + 0.38 * run) * a * (1 - 0.65 * c);
-    var thL = -1.15 * c + sw * amp, thR = -1.15 * c - sw * amp;          // sudut kaki di dunia
-    Nn.legL.r[0] = thL - lean; Nn.legR.r[0] = thR - lean;
-    var D = 0.6 * (1 - Math.cos(Math.max(Math.abs(thL), Math.abs(thR))));
-    var H = 0.62;
-    Nn.six.r[0] = lean;
-    Nn.six.t = [0, H * (1 - Math.cos(lean)) - D, -H * Math.sin(lean)];
-    Nn.six.s[1] = 1 + 0.008 * Math.sin(t * 1.8);
-
-    // lengan kiri: ayun / meraih kunci
-    var swArm = -sw * 0.45 * a * (1 - c);
-    var reachL = sixReachL.at(t);
-    var armLx = lerp(-0.06 + swArm - 0.5 * c - 0.6 * s, -2.35, reachL);
-    Nn.armL.r[0] = armLx + tr; Nn.armL.r[2] = lerp(0.17 + 0.2 * s, 0.02, reachL);
-    // lengan kanan: memegang lighter
+    var thL = -1.15 * c + sw * amp, thR = -1.15 * c - sw * amp;
+    SN.legL.r[0] = thL - lean; SN.legR.r[0] = thR - lean;
+    var D = 0.6 * (1 - Math.cos(Math.max(Math.abs(thL), Math.abs(thR)))), H = 0.62;
+    sixRoot.r[0] = lean;
+    sixRoot.t = [0, H * (1 - Math.cos(lean)) - D, -H * Math.sin(lean)];
+    sixRoot.s[1] = 1 + 0.008 * Math.sin(t * 1.8);
+    var swArm = -sw * 0.45 * a * (1 - c), reachL = sixReachL.at(t);
+    SN.armL.r[0] = lerp(-0.06 + swArm - 0.5 * c - 0.6 * s, -2.35, reachL) + tr;
+    SN.armL.r[2] = lerp(0.17 + 0.2 * s, 0.02, reachL);
     var up = sixArmRUp.at(t);
-    var armRx = lerp(-0.06 - swArm - 0.5 * c - 0.6 * s, -1.15 - 0.05 * Math.sin(t * 2.1), up);
-    Nn.armR.r[0] = armRx - tr; Nn.armR.r[2] = lerp(-0.17 - 0.2 * s, -0.12, up);
-
-    Nn.head.r[1] = sixHeadYaw.at(t) + tr * 2;
-    Nn.head.r[0] = sixHeadPitch.at(t) - 0.55 * lean;
-    Nn.hood.r[2] += 0.03 * Math.sin(t * 0.9 + 0.5) + tr;
-    R.sync();
+    SN.armR.r[0] = lerp(-0.06 - swArm - 0.5 * c - 0.6 * s, -1.15 - 0.05 * Math.sin(t * 2.1), up) - tr;
+    SN.armR.r[2] = lerp(-0.17 - 0.2 * s, -0.12, up);
+    SN.head.r[1] = sixHeadYaw.at(t) + tr * 2;
+    SN.head.r[0] = sixHeadPitch.at(t) - 0.55 * lean;
+    SN.hood.r[2] += 0.03 * Math.sin(t * 0.9 + 0.5) + tr;
   }
 
   /* =======================================================
-   *  POSE: MONO  (Three.Group per bagian, rotation langsung)
+   *  POSE: MONO
    * ======================================================= */
   function poseMono(t) {
-    var R = monoRig;
+    resetMono();
     var sp = monoPath.speed(t), a = clamp(sp / 0.6, 0, 1), run = clamp((sp - 1.25) / 0.5, 0, 1);
     var c = monoCrouch.at(t), ph = monoPath.dist(t) / 0.55 * TAU, sw = Math.sin(ph);
     var s = monoScared.at(t), tr = (hash(Math.floor(t * 30) + 9) - 0.5) * 0.04 * s;
-
     var lean = 0.05 * a + 0.16 * run + 0.38 * c;
     var amp = (0.42 + 0.32 * run) * a * (1 - 0.6 * c);
     var thP = -1.1 * c + sw * amp, thN = -1.1 * c - sw * amp;
-    var D = 0.9 * (1 - Math.cos(Math.max(Math.abs(thP), Math.abs(thN))));
-    var H = 0.9;
-    R.hips.rotation.set(lean, 0, 0);
-    R.hips.position.set(0, H * (1 - Math.cos(lean)) - D, -H * Math.sin(lean));
-    R.legP.rotation.x = thP; R.legN.rotation.x = thN;
-    R.legP.position.y = 0.9 - D; R.legN.position.y = 0.9 - D;
-
+    var D = 0.9 * (1 - Math.cos(Math.max(Math.abs(thP), Math.abs(thN)))), H = 0.9;
+    MN.hips.r[0] = lean; MN.hips.t = [0, H * (1 - Math.cos(lean)) - D, -H * Math.sin(lean)];
+    MN.legP.r[0] = thP; MN.legN.r[0] = thN; MN.legP.t[1] = 0.9 - D; MN.legN.t[1] = 0.9 - D;
     var pull = monoPull.at(t), reach = monoReach.at(t);
-    // lengan P: meraih radio / menarik Six ; lengan N: ayun
-    var armPx = lerp(-sw * 0.5 * a * (1 - c) - 0.8 * s * 0.5, -0.9, reach);
+    var armPx = lerp(-sw * 0.5 * a * (1 - c) - 0.4 * s, -0.9, reach);
     armPx = lerp(armPx, -1.25, pull);
-    R.armP.rotation.set(armPx + tr - lean * 0.3, 0, lerp(0, -0.1, pull));
-    var armNx = sw * 0.5 * a * (1 - c) - 0.8 * s * 0.5;
-    R.armN.rotation.set(armNx - tr - lean * 0.3, 0, 0);
-    R.head.rotation.set(-0.6 * lean + 0.05 * Math.sin(t * 1.3), monoHeadYaw.at(t) + tr * 2, 0);
-    if (R.cape) R.cape.rotation.x = 0.12 + 0.10 * a + 0.25 * run + 0.02 * Math.sin(t * 2.2);
+    MN.armP.r[0] = armPx + tr - lean * 0.3; MN.armP.r[2] = lerp(0, -0.1, pull);
+    MN.armN.r[0] = sw * 0.5 * a * (1 - c) - 0.4 * s - tr - lean * 0.3;
+    MN.head.r[0] = -0.6 * lean + 0.05 * Math.sin(t * 1.3); MN.head.r[1] = monoHeadYaw.at(t) + tr * 2;
+    MN.cape.r[0] = 0.12 + 0.10 * a + 0.25 * run + 0.02 * Math.sin(t * 2.2);
   }
 
   /* =======================================================
-   *  POSE: THE JANITOR
-   *  Badan/kaki memakai Euler; lengan panjang di-aim (IK sederhana):
-   *  lengan diregangkan pada sumbu-y lalu diputar agar ujungnya menuju target.
+   *  POSE: THE JANITOR - badan Euler, lengan panjang di-IK
+   *  Lengan diregangkan pada sumbu-y lalu diputar agar ujungnya menuju target.
    * ======================================================= */
-  var JN = janRig.nodes;
-  var bodyG = janRig.groups.body;
-
-  function aimArm(S, Tl, qOut) {                  // Tl = target di ruang lokal badan (satuan model)
-    tmpP.set(S * 0.22, 1.27, 0);
-    tmpV.copy(Tl).sub(tmpP);
-    var L = Math.max(tmpV.length() - 0.28, 1.38);
-    var sy = clamp(Math.sqrt(Math.max(L * L - 0.5956, 1.2769)) / 1.13, 1.0, 5.0);
-    tmpV2.set(S * 0.40, -1.13 * sy, 0.66).normalize();
-    qOut.setFromUnitVectors(tmpV2, tmpV.normalize());
-    return sy;
-  }
-  var DOOR_R = [[88.0, 8.2, 0.9, -2.6], [91.0, 8.5, 0.9, -3.0], [93.5, 8.5, 0.9, -3.4], [95.5, 8.65, 0.85, -4.0], [97.5, 8.75, 0.85, -4.5], [99.4, 8.75, 0.85, -4.85]];
-  var DOOR_L = [[88.0, 7.7, 1.1, -2.4], [92.0, 7.75, 1.4, -3.0], [99.5, 7.75, 1.45, -3.1]];
-  function keyPoint(list, t, out) {
-    var n = list.length;
-    if (t <= list[0][0]) return out.set(list[0][1], list[0][2], list[0][3]);
-    if (t >= list[n - 1][0]) return out.set(list[n - 1][1], list[n - 1][2], list[n - 1][3]);
-    for (var i = 1; i < n; i++) if (t < list[i][0]) {
-      var a = list[i - 1], b = list[i], u = sstep((t - a[0]) / (b[0] - a[0]));
-      return out.set(lerp(a[1], b[1], u), lerp(a[2], b[2], u), lerp(a[3], b[3], u));
-    }
-  }
-
-  var sixChest = new THREE.Vector3(), shW = new THREE.Vector3(), tipW = new THREE.Vector3(), tipW2 = new THREE.Vector3(), tl = new THREE.Vector3();
-  var qHang = new THREE.Quaternion(), qS = new THREE.Quaternion(), qR = new THREE.Quaternion();
-
   function poseJanitorBody(t) {
-    var R = janRig;
-    R.reset();
-    var sp = janPath.speed(t), a = clamp(sp / 0.45, 0, 1);
-    var ph = janPath.dist(t) / 1.0 * TAU, sw = Math.sin(ph);
-    var lean = janLean.at(t) + 0.03 * a;
-    var thw = 0.40 * sw * a;
+    resetJan();
+    var sp = janPath.speed(t), a = clamp(sp / 0.45, 0, 1), ph = janPath.dist(t) / 1.0 * TAU, sw = Math.sin(ph);
+    var lean = janLean.at(t) + 0.03 * a, thw = 0.40 * sw * a;
     JN.legL.rotation[0] = thw; JN.legR.rotation[0] = -thw;
     JN.root.position = [0, -0.5 * (1 - Math.cos(thw)) + 0.02 * Math.abs(Math.cos(ph)) * a, 0];
     var H = 0.55;
     JN.body.rotation = [lean, 0, 0.05 * Math.sin(ph) * a];
     JN.body.position = [0, H * (1 - Math.cos(lean)), -H * Math.sin(lean)];
     JN.head.rotation = [JN.head.rotation[0] + janHeadPitch.at(t) - 0.5 * lean, janHeadYaw.at(t) + 0.12 * Math.sin(t * 0.7) * (1 - a), 0.04 * Math.sin(t * 0.5)];
-    R.sync();
+  }
+  // arah & regangan lengan agar ujung (jari) mencapai titik Tl (ruang lokal badan)
+  function aimArm(S_, Tl) {
+    var P = [S_ * 0.22, 1.27, 0], v = LIBS.sub(Tl, P), len = LIBS.length(v);
+    var L = Math.max(len - 0.28, 1.38);
+    var sy = clamp(Math.sqrt(Math.max(L * L - 0.5956, 1.2769)) / 1.13, 1.0, 5.0);
+    return { dir: v.map(function (x) { return x / (len || 1); }), sy: sy };
+  }
+  var DOOR_R = [[88.0, 8.2, 0.9, -2.6], [91.0, 8.5, 0.9, -3.0], [93.5, 8.5, 0.9, -3.4], [95.5, 8.65, 0.85, -4.0], [97.5, 8.75, 0.85, -4.5], [99.4, 8.75, 0.85, -4.85]];
+  var DOOR_L = [[88.0, 7.7, 1.1, -2.4], [92.0, 7.75, 1.4, -3.0], [99.5, 7.75, 1.45, -3.1]];
+  function keyPoint(list, t) {
+    var n = list.length;
+    if (t <= list[0][0]) return [list[0][1], list[0][2], list[0][3]];
+    if (t >= list[n - 1][0]) return [list[n - 1][1], list[n - 1][2], list[n - 1][3]];
+    for (var i = 1; i < n; i++) if (t < list[i][0]) {
+      var a = list[i - 1], b = list[i], u = sstep((t - a[0]) / (b[0] - a[0]));
+      return [lerp(a[1], b[1], u), lerp(a[2], b[2], u), lerp(a[3], b[3], u)];
+    }
   }
   function poseJanitorArms(t) {
     var sp = janPath.speed(t), a = clamp(sp / 0.45, 0, 1), ph = janPath.dist(t) / 1.0 * TAU;
     var wSearch = janSearch.at(t), wReach = janReach.at(t), wDoor = janDoor.at(t);
-    var cs = Math.cos(actorJan.rotation.y), sn = Math.sin(actorJan.rotation.y);
+    var bodyW = mul(mul(M_.jan, JN.root.local()), JN.body.local()), bodyInv = inv4(bodyW);
     [-1, 1].forEach(function (S_) {
-      var grp = janRig.groups[S_ < 0 ? 'armL' : 'armR'];
+      var node = S_ < 0 ? JN.armL : JN.armR, P = [S_ * 0.22, 1.27, 0];
       // 1) menggantung / diseret, sedikit mengayun
-      tmpE.set(0.16 * Math.sin(ph + (S_ > 0 ? 0 : Math.PI)) * a + 0.03 * Math.sin(t * 0.8 + S_), 0, S_ * 0.03);
-      qHang.setFromEuler(tmpE);
-      var sy = 1.08;
-      var q = tmpQ.copy(qHang);
+      var rh = mul(LIBS.rotationX(0.16 * Math.sin(ph + (S_ > 0 ? 0 : Math.PI)) * a + 0.03 * Math.sin(t * 0.8 + S_)), LIBS.rotationZ(S_ * 0.03));
+      var sy = 1.08, dir = norm(tp(rh, norm([S_ * 0.40, -1.13 * sy, 0.66])));
+      var hang = dir.slice();
       // 2) menyapu lantai
       if (wSearch > 0.001) {
         var ps = t * 0.9 + (S_ > 0 ? 0 : 2.2);
-        tl.set(S_ * (0.30 + 0.60 * Math.sin(ps * 0.8)), 0.08 + 0.30 * Math.max(0, Math.sin(ps * 0.55)), 0.8 + 1.5 * (0.5 + 0.5 * Math.sin(ps)));
-        var sy1 = aimArm(S_, tl, qS);
-        q.slerp(qS, wSearch); sy = lerp(sy, sy1, wSearch);
+        var tl = [S_ * (0.30 + 0.60 * Math.sin(ps * 0.8)), 0.08 + 0.30 * Math.max(0, Math.sin(ps * 0.55)), 0.8 + 1.5 * (0.5 + 0.5 * Math.sin(ps))];
+        var r1 = aimArm(S_, tl);
+        dir = norm(LIBS.lerp(dir, r1.dir, wSearch)); sy = lerp(sy, r1.sy, wSearch);
       }
-      // 3) meraih (mengejar Six / celah pintu lift)
+      // 3) meraih: mengejar Six / celah pintu lift
       if (wReach > 0.001) {
-        tmpP.set(S_ * 0.22, 1.27, 0); shW.copy(tmpP); bodyG.localToWorld(shW);
-        // target kejar: dada Six, dibatasi panjang jangkauan L(t)
-        sixChest.set(W_.six.x, 0.62 + 0.0, W_.six.z);
-        tmpV.copy(sixChest).sub(shW);
-        var dist = tmpV.length(), Lm = Math.min(janReachLen.at(t), dist);
-        tipW.copy(shW).addScaledVector(tmpV.normalize(), Lm);
-        tipW.x += 0.18 * S_ * Math.sin(t * 2.3 + S_); tipW.y += 0.06 * Math.sin(t * 3.1 + S_ * 2);
-        // target pintu lift (setelah t ~ 88)
-        if (wDoor > 0.001) {
-          keyPoint(S_ < 0 ? DOOR_R : DOOR_L, t, tipW2);
-          tipW.lerp(tipW2, wDoor);
-        }
-        tl.copy(tipW); bodyG.worldToLocal(tl);
-        var sy2 = aimArm(S_, tl, qR);
-        q.slerp(qR, wReach); sy = lerp(sy, sy2, wReach);
+        var shW = tp(bodyW, P);
+        var chest = [W_.six[0], 0.62, W_.six[2]], dv = LIBS.sub(chest, shW), dist = LIBS.length(dv), Lm = Math.min(janReachLen.at(t), dist);
+        var tip = LIBS.add(shW, LIBS.scaleVector(norm(dv), Lm));
+        tip[0] += 0.18 * S_ * Math.sin(t * 2.3 + S_); tip[1] += 0.06 * Math.sin(t * 3.1 + S_ * 2);
+        if (wDoor > 0.001) tip = LIBS.lerp(tip, keyPoint(S_ < 0 ? DOOR_R : DOOR_L, t), wDoor);
+        var r2 = aimArm(S_, tp(bodyInv, tip));
+        dir = norm(LIBS.lerp(dir, r2.dir, wReach)); sy = lerp(sy, r2.sy, wReach);
       }
-      tmpP.set(S_ * 0.22, 1.27, 0);
-      tmpM.compose(tmpP, q, tmpS.set(1, sy, 1));
-      grp.matrix.copy(tmpM); grp.matrixWorldNeedsUpdate = true;
+      var h = norm([S_ * 0.40, -1.13 * sy, 0.66]);
+      node.matrixOverride = mul(mul(LIBS.translation(P[0], P[1], P[2]), rotFromTo(h, dir)), LIBS.scaling(1, sy, 1));
     });
   }
 
   /* =======================================================
-   *  PROPS per frame
+   *  PROPS per frame: kunci, kaleng, radio, pintu, lift, lampu kunci
    * ======================================================= */
-  var handW = new THREE.Vector3(), keyQ = new THREE.Quaternion(), holdQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0)), tmpQw = new THREE.Quaternion();
-  var keyTableQ = new THREE.Quaternion().setFromEuler(env.key.rotation.clone ? env.key.rotation.clone() : new THREE.Euler(0, 0.4, Math.PI / 2));
+  var holdR = LIBS.rotationX(Math.PI / 2);
+  var keyTableM = mul(LIBS.translation(env.keyTable[0], env.keyTable[1], env.keyTable[2]), mul(LIBS.rotationY(0.4), LIBS.rotationZ(Math.PI / 2)));
+  var lampK = { left: 1, mid: 1, door: 1, table: 0 };       // dipakai bayangan
 
   function updateProps(t) {
-    /* lighter + api */
+    // lighter + api (lengan kanan Six)
+    armRWorld = mul(mul(M_.six, sixRoot.local()), SN.armR.local());
+    armLWorld = mul(mul(M_.six, sixRoot.local()), SN.armL.local());
     var fl = sixFlame.at(t), fk = flick(t, 5.0, 0.35);
-    lighter.visible = sixArmRUp.at(t) > 0.05;
-    handW.set(0, -0.56, 0.02); sixRig.groups.armR.localToWorld(handW);
-    flame.position.set(handW.x, handW.y + 0.045, handW.z);
-    flame.visible = fl > 0.02;
-    flameMesh.scale.set(0.8 * fl, (1.7 + 0.5 * Math.sin(t * 31)) * fl, 0.8 * fl);
-    flameCore.scale.set(0.8 * fl, 1.5 * fl, 0.8 * fl);
-    flameLight.intensity = 2.0 * fl * (0.75 + 0.25 * Math.sin(t * 27) * Math.sin(t * 13.1)) * fk;
-    flameLight.position.set(0, 0.05, 0.05);
+    var hp = tp(armRWorld, [0, -0.56 * 1, 0.02]);
+    flamePos = [hp[0], hp[1] + 0.045, hp[2]]; flameK = fl;
+    flameFlick = (0.75 + 0.25 * Math.sin(t * 27) * Math.sin(t * 13.1)) * fk;
+    lighterOn = sixArmRUp.at(t) > 0.05;
 
-    /* kunci */
-    var key = env.key;
-    sixRig.groups.armL.updateWorldMatrix(true, false);
-    handW.set(0, -0.52, 0.02); sixRig.groups.armL.localToWorld(handW);
-    sixRig.groups.armL.getWorldQuaternion(tmpQw);
-    keyQ.copy(tmpQw).multiply(holdQ);
-    if (t < KEY_GRAB) { key.position.copy(env.keyTable); key.quaternion.copy(keyTableQ); }
-    else if (t < KEY_HELD) {
-      var u = sstep((t - KEY_GRAB) / (KEY_HELD - KEY_GRAB));
-      key.position.copy(env.keyTable).lerp(handW, u); key.quaternion.copy(keyTableQ).slerp(keyQ, u);
-    } else { key.position.copy(handW); key.quaternion.copy(keyQ); }
-    // gemetar saat mencoba memasukkan kunci
-    if (t > 66.5 && t < 84.0) { key.position.x += 0.004 * Math.sin(t * 40); key.position.y += 0.003 * Math.sin(t * 33); }
+    // kunci: di meja -> terbang ke tangan kiri -> dipegang (bergetar saat dicoba masuk)
+    var handM = mul(mul(armLWorld, LIBS.translation(0, -0.52, 0.02)), holdR);
+    var km;
+    if (t < KEY_GRAB) km = keyTableM;
+    else if (t < KEY_HELD) km = blendRT(keyTableM, handM, sstep((t - KEY_GRAB) / (KEY_HELD - KEY_GRAB)));
+    else km = handM.slice();
+    if (t > 66.5 && t < 84.0) { km[12] += 0.004 * Math.sin(t * 40); km[13] += 0.003 * Math.sin(t * 33); }
+    env.key.m = km;
 
-    /* kaleng */
-    var can = env.can, s0 = env.canStart;
-    if (t < CAN_T0) { can.position.copy(s0); can.rotation.set(0, 0, 0); }
+    // kaleng jatuh dari meja lalu menggelinding ke arah kamera
+    var s0 = env.canStart;
+    if (t < CAN_T0) env.can.m = LIBS.translation(s0[0], s0[1], s0[2]);
     else if (t < CAN_T0 + CAN_FALL) {
       var tau = t - CAN_T0, u2 = tau / CAN_FALL;
-      can.position.set(s0.x + 0.30 * u2, s0.y - (s0.y - 0.07) * u2 * u2, s0.z + 0.45 * u2);
-      can.rotation.set(0.6 * tau * 6, 0, 1.2 * u2 * Math.PI / 2);
-    } else {                                      // menggelinding ke arah kamera
-      var r = t - (CAN_T0 + CAN_FALL), v = Math.max(0, 1 - r / 1.8);
-      var travel = 0.9 * (1 - v * v);
-      can.position.set(s0.x + 0.30, 0.07, s0.z + 0.45 + travel);
-      can.rotation.set(-travel / 0.07, 0, Math.PI / 2);
+      env.can.m = mul(LIBS.translation(s0[0] + 0.30 * u2, s0[1] - (s0[1] - 0.07) * u2 * u2, s0[2] + 0.45 * u2), mul(LIBS.rotationX(0.6 * tau * 6), LIBS.rotationZ(1.2 * u2 * Math.PI / 2)));
+    } else {
+      var r = t - (CAN_T0 + CAN_FALL), v = Math.max(0, 1 - r / 1.8), travel = 0.9 * (1 - v * v);
+      env.can.m = mul(LIBS.translation(s0[0] + 0.30, 0.07, s0[2] + 0.45 + travel), mul(LIBS.rotationX(-travel / 0.07), LIBS.rotationZ(Math.PI / 2)));
     }
 
-    /* radio */
+    // radio menyala
     var on = t >= RADIO_ON ? 1 : 0, pulse = on ? 0.75 + 0.25 * Math.sin(t * 9) * Math.sin(t * 5.3) : 0;
-    env.radio.light.intensity = 1.1 * on * pulse * (on ? flick(t, 8.0, 0.2) : 1);
-    env.radio.dialMat.emissiveIntensity = 1.8 * on * pulse;
-    env.radio.grilleMat.emissive.setRGB(0.25 * on * pulse, 0.17 * on * pulse, 0.05 * on * pulse);
+    env.radio.dialMat.emis = [1.0 * on * pulse, 0.78 * on * pulse, 0.38 * on * pulse];
+    env.radio.grilleMat.emis = [0.25 * on * pulse, 0.17 * on * pulse, 0.05 * on * pulse];
 
-    /* pintu & jeruji lift */
-    env.leafPivot.rotation.y = doorAngle.at(t);
-    var gs = gateScale.at(t); env.gateL.scale.x = gs; env.gateR.scale.x = gs;
+    // pintu & jeruji lift
+    env.leafPivot.m = mul(LIBS.translation(9.6, 0, -3.08), LIBS.rotationY(doorAngle.at(t)));
+    var gs = gateScale.at(t);
+    env.gateL.m = mul(env.gateL.base, LIBS.scaling(gs, 1, 1)); env.gateR.m = mul(env.gateR.base, LIBS.scaling(gs, 1, 1));
     var open = sstep((t - 84.6) / 2.0);
-    env.cabinLight.intensity = 1.6 * sstep((t - 84.8) / 1.5) * (t > 98.6 ? flick(t, 4.0, 0.7) : 1);
-    env.cabLampMat.emissiveIntensity = 2.0 * open;
-    // lampu kunci: merah berkedip -> hijau saat dibuka
-    var unlocked = t >= UNLOCK_T;
-    var blink = unlocked ? 1 : (0.55 + 0.45 * Math.sin(t * 5.0));
-    env.lockBulbMat.emissive.setRGB(unlocked ? 0.1 : 1, unlocked ? 1 : 0.15, unlocked ? 0.2 : 0.06);
-    env.lockBulbMat.emissiveIntensity = 1.6 * blink;
-    env.lockLight.color.setRGB(unlocked ? 0.2 : 1, unlocked ? 1 : 0.2, unlocked ? 0.3 : 0.1);
-    env.lockLight.intensity = 0.9 * blink;
+    env.cabLampMat.emis = [1.0 * open, 0.85 * open, 0.55 * open];
+    var unlocked = t >= UNLOCK_T, blink = unlocked ? 1 : (0.55 + 0.45 * Math.sin(t * 5.0));
+    env.lockBulbMat.emis = unlocked ? [0.1 * 1.6 * blink, 1.6 * blink, 0.2 * 1.6 * blink] : [1.6 * blink, 0.24 * blink, 0.1 * blink];
   }
+  var lighterOn = true;
 
-  /* lampu ruangan */
+  /* =======================================================
+   *  LAMPU (dihitung tiap frame -> dikirim ke shader sebagai uniform)
+   * ======================================================= */
+  var frameLights = { points: [], spot: null, ambient: [0.18, 0.16, 0.12] };
+  function scale3(c, k) { return [c[0] * k, c[1] * k, c[2] * k]; }
   function updateLights(t) {
-    // kedipan: parah di Scene 1, makin parah setelah kaleng jatuh
-    var f1 = t < 15 ? 0.85 : 0.3;
-    var chaos = t > 60 && t < 99.4 ? 0.55 : 0;
-    var kL = flick(t, 1.0, Math.max(f1, chaos)), kM = flick(t, 2.0, t < 15 ? 0.6 : Math.max(0.3, chaos)),
-      kD = flick(t, 3.0, Math.max(0.25, chaos));
-    var midDim = 1 - 0.7 * sstep((t - 23.5) / 1.0) * (1 - sstep((t - 85) / 1)) ;   // koridor menggelap saat Janitor muncul
-    lightLeft.intensity = 1.5 * kL; setBulb(env.lamps.left, kL);
-    lightMid.intensity = 1.8 * kM * midDim; setBulb(env.lamps.mid, kM * midDim);
-    lightDoor.intensity = 1.3 * kD; setBulb(env.lamps.door, kD);
-    // lampu meja menyala pada 0:15 (Scene 2) dengan kedipan
-    var on = t >= 15.4 ? 1 : 0;
-    var amt = t < 17.5 ? 1.0 : (t > 22.5 && t < 26 ? 0.8 : (chaos ? 0.55 : 0.18));
-    var kT = flick(t, 6.0, amt) * on;
-    spot.intensity = 5.0 * kT; setBulb(env.lamps.table, kT);
-    // kabin gelap sebelum terbuka -> sudah diatur di updateProps
+    var f1 = t < 15 ? 0.85 : 0.3, chaos = t > 60 && t < 99.4 ? 0.55 : 0;
+    var kL = flick(t, 1.0, Math.max(f1, chaos)), kM = flick(t, 2.0, t < 15 ? 0.6 : Math.max(0.3, chaos)), kD = flick(t, 3.0, Math.max(0.25, chaos));
+    var midDim = 1 - 0.7 * sstep((t - 23.5) / 1.0) * (1 - sstep((t - 85) / 1));
+    var iL = 1.5 * kL, iM = 1.8 * kM * midDim, iD = 1.3 * kD;
+    function bulb(l, k) { l.bulbMat.emis = [2.4 * k, 2.0 * k, 1.4 * k]; }
+    bulb(env.lamps.left, kL); bulb(env.lamps.mid, kM * midDim); bulb(env.lamps.door, kD);
+    var onT = t >= 15.4 ? 1 : 0, amt = t < 17.5 ? 1.0 : (t > 22.5 && t < 26 ? 0.8 : (chaos ? 0.55 : 0.18));
+    var kT = flick(t, 6.0, amt) * onT; bulb(env.lamps.table, kT);
+    lampK.table = kT; lampK.mid = kM * midDim; lampK.left = kL;
+
+    var cabI = 1.6 * sstep((t - 84.8) / 1.5) * (t > 98.6 ? flick(t, 4.0, 0.7) : 1);
+    var radioI = (t >= RADIO_ON ? 1 : 0) * (0.75 + 0.25 * Math.sin(t * 9) * Math.sin(t * 5.3)) * 1.1 * flick(t, 8.0, 0.2);
+    var blink = t >= UNLOCK_T ? 1 : (0.55 + 0.45 * Math.sin(t * 5.0));
+    var lockC = t >= UNLOCK_T ? [0.2, 1, 0.3] : [1, 0.2, 0.1];
+    var fl = flameK * 2.0 * flameFlick;
+    var P = env.lamps, rp = env.radioPos;
+    frameLights.points = [
+      { pos: P.left.pos, color: scale3([1, 0.82, 0.54], iL), range: 11 },
+      { pos: P.mid.pos, color: scale3([1, 0.85, 0.63], iM), range: 11 },
+      { pos: P.door.pos, color: scale3([1, 0.81, 0.56], iD), range: 10 },
+      { pos: [flamePos[0], flamePos[1] + 0.05, flamePos[2] + 0.05], color: scale3([1, 0.6, 0.24], fl), range: 6.5 },
+      { pos: [rp[0] + 0.1, rp[1] + 0.3, rp[2] + 0.45], color: scale3([1, 0.77, 0.42], radioI), range: 4.5 },
+      { pos: [8.6, 3.2, -2.5], color: scale3(lockC, 0.9 * blink), range: 5 },
+      { pos: [8.6, 2.7, -4.2], color: scale3([1, 0.88, 0.63], cabI), range: 7 }
+    ];
+    var sp = P.table.pos, tg = [env.table.x, 0.3, env.table.z + 0.4];
+    frameLights.spot = { pos: sp, dir: norm(LIBS.sub(tg, sp)), color: scale3([1, 0.87, 0.67], 5.0 * kT), cosOuter: Math.cos(0.95), cosInner: Math.cos(0.95 * 0.25), range: 11 };
     env.updateDust(t);
-    amb.intensity = 0.8;
   }
 
   /* =======================================================
-   *  KAMERA (shot list)
-   *  p/l bisa array [x,y,z] atau fungsi () => [x,y,z] (untuk mengikuti karakter)
+   *  KAMERA (shot list) : p/l = array [x,y,z] atau fungsi () => [x,y,z]
    * ======================================================= */
-  function Wp(k, dx, dy, dz) { return function () { var v = W_[k]; return [v.x + (dx || 0), v.y + (dy || 0), v.z + (dz || 0)]; }; }
-  function Mid(a, b, dy) { return function () { return [(W_[a].x + W_[b].x) / 2, (W_[a].y + W_[b].y) / 2 + (dy || 0), (W_[a].z + W_[b].z) / 2]; }; }
+  function Wp(k, dx, dy, dz) { return function () { var v = W_[k]; return [v[0] + (dx || 0), v[1] + (dy || 0), v[2] + (dz || 0)]; }; }
+  function Mid(a, b, dy) { return function () { return [(W_[a][0] + W_[b][0]) / 2, (W_[a][1] + W_[b][1]) / 2 + (dy || 0), (W_[a][2] + W_[b][2]) / 2]; }; }
+
   var SHOTS = [
     // ---- Scene 1 : A Dark Beginning ----
     { t0: 0.0,  t1: 4.0,  p0: [-3.8, 1.0, 5.8], p1: [-3.0, 1.0, 5.3], l0: [-1.0, 1.3, -1.0], l1: [0.0, 1.2, -1.0], f0: 42, f1: 42, sh: 0.003, name: 'Lorong gelap The Maw' },
@@ -485,24 +463,20 @@ window.createAnimation = function (ctx) {
     { t0: 91.5, t1: 96.0, p0: [7.2, 1.05, 0.9], p1: [7.0, 1.0, 0.3], l0: [8.6, 0.9, -3.8], l1: [8.6, 0.9, -3.8], f0: 34, f1: 34, sh: 0.008, name: 'Pintu menutup, tangan menyelinap' },
     { t0: 96.0, t1: 100.0, p0: [8.7, 0.85, -1.8], p1: [8.7, 0.9, -2.6], l0: [8.6, 0.85, -4.9], l1: [8.6, 0.85, -4.9], f0: 34, f1: 28, sh: 0.01, name: 'Mundur ketakutan' }
   ];
+
   function ev(v) { return typeof v === 'function' ? v() : v; }
   function shotAt(t) { for (var i = 0; i < SHOTS.length; i++) if (t < SHOTS[i].t1) return SHOTS[i]; return SHOTS[SHOTS.length - 1]; }
 
-  var camP = new THREE.Vector3(), camL = new THREE.Vector3();
-  function applyCamera(t, camera) {
+
+  function applyCamera(t) {
     var s = shotAt(t), u = sstep((t - s.t0) / (s.t1 - s.t0));
     var p0 = ev(s.p0), p1 = ev(s.p1), l0 = ev(s.l0), l1 = ev(s.l1);
-    camP.set(lerp(p0[0], p1[0], u), lerp(p0[1], p1[1], u), lerp(p0[2], p1[2], u));
-    camL.set(lerp(l0[0], l1[0], u), lerp(l0[1], l1[1], u), lerp(l0[2], l1[2], u));
-    // getaran tangan (handheld)
-    var sh = s.sh || 0;
-    camP.x += sh * Math.sin(t * 13.1) + sh * 0.6 * Math.sin(t * 29.7);
-    camP.y += sh * Math.sin(t * 11.3 + 1.0);
-    camL.x += sh * 1.5 * Math.sin(t * 9.7 + 2.0); camL.y += sh * 1.5 * Math.sin(t * 8.9);
-    camera.position.copy(camP); camera.lookAt(camL);
-    var fov = lerp(s.f0, s.f1, u);
-    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
-    return s;
+    var eye = [lerp(p0[0], p1[0], u), lerp(p0[1], p1[1], u), lerp(p0[2], p1[2], u)];
+    var look = [lerp(l0[0], l1[0], u), lerp(l0[1], l1[1], u), lerp(l0[2], l1[2], u)];
+    var sh = s.sh || 0;                                   // getaran tangan (handheld)
+    eye[0] += sh * Math.sin(t * 13.1) + sh * 0.6 * Math.sin(t * 29.7); eye[1] += sh * Math.sin(t * 11.3 + 1.0);
+    look[0] += sh * 1.5 * Math.sin(t * 9.7 + 2.0); look[1] += sh * 1.5 * Math.sin(t * 8.9);
+    return { eye: eye, look: look, fov: lerp(s.f0, s.f1, u), shot: s };
   }
 
   /* =======================================================
@@ -556,58 +530,92 @@ window.createAnimation = function (ctx) {
     [99.4, function () { sfx.silence(); sfx.thud(); }]
   ];
 
-  function stepSounds(t, playing, camera) {
+  function stepSounds(t, playing) {
     if (!playing) return;
     var list = [['six', sixPath, 0.62, 'light', 0.9], ['mono', monoPath, 0.55, 'light', 0.7], ['jan', janPath, 1.0, 'heavy', 1.0]];
     list.forEach(function (it) {
       var key = it[0], path = it[1], idx = Math.floor(path.dist(t) / it[2] * 2);
-      if (idx !== lastStep[key] && path.speed(t) > 0.25) {
-        if (key !== 'jan' || t > 21.5) {
-          var d = camera.position.distanceTo(W_[key]);
-          var vol = clamp(1.2 - d / 14, 0, 1) * it[4];
-          sfx.step(it[3], vol);
-        }
+      if (idx !== lastStep[key] && path.speed(t) > 0.25 && (key !== 'jan' || t > 21.5)) {
+        var d = Math.hypot(camEye[0] - W_[key][0], camEye[1] - W_[key][1], camEye[2] - W_[key][2]);
+        sfx.step(it[3], clamp(1.2 - d / 14, 0, 1) * it[4]);
       }
       lastStep[key] = idx;
     });
   }
 
   /* =======================================================
-   *  UPDATE UTAMA
+   *  UPDATE (waktu -> pose, props, lampu, kamera) & RENDER
    * ======================================================= */
-  function update(t, playing, camera, freeCam) {
-    // posisi aktor
-    var p = sixPath.at(t); actorSix.position.set(p[0], 0, p[1]); actorSix.rotation.y = sixYaw.at(t);
-    p = monoPath.at(t); actorMono.position.set(p[0], 0, p[1]); actorMono.rotation.y = monoYaw.at(t);
-    p = janPath.at(t); actorJan.position.set(p[0], 0, p[1]); actorJan.rotation.y = janYaw.at(t);
-    actorJan.visible = t >= 22.0;
-    W_.six.set(actorSix.position.x, 0.7, actorSix.position.z);
-    W_.mono.set(actorMono.position.x, 0.6, actorMono.position.z);
-    W_.jan.set(actorJan.position.x, 1.2, actorJan.position.z);
+  var cam = { eye: [0, 1, 5], look: [0, 1, 0], fov: 40 };
+  var shadowQuad = Rn.mesh(GeoX.plane(2, 2, 0.5, 0.5));
+  function update(t, playing, freeCam) {
+    var ids = ['six', 'mono', 'jan'], paths = [sixPath, monoPath, janPath], yaws = [sixYaw, monoYaw, janYaw];
+    for (var i = 0; i < 3; i++) {
+      var p = paths[i].at(t), y = yaws[i].at(t), k = ids[i];
+      P_[k] = p; M_[k] = actorMatrix(p, y, SCALE[k]);
+      W_[k] = [p[0], k === 'six' ? 0.7 : (k === 'mono' ? 0.6 : 1.2), p[1]];
+    }
+    janVisible = t >= 22.0;
+    poseSix(t); poseMono(t); poseJanitorBody(t); poseJanitorArms(t);
+    updateProps(t); updateLights(t);
 
-    poseSix(t); poseMono(t); poseJanitorBody(t);
-    stage.updateMatrixWorld(true);                 // matriks dunia terbaru (dibutuhkan IK lengan & posisi tangan)
-    poseJanitorArms(t);
-    updateProps(t);
-    updateLights(t);
-
-    // efek suara berbasis peristiwa & langkah
     if (playing) {
-      for (var i = 0; i < EVENTS.length; i++) {
-        var e = EVENTS[i];
-        if (e[0] > lastEvt && e[0] <= t) e[1]();
-      }
-      stepSounds(t, true, camera);
-      sfx.tick(t);
+      for (var e = 0; e < EVENTS.length; e++) if (EVENTS[e][0] > lastEvt && EVENTS[e][0] <= t) EVENTS[e][1]();
+      stepSounds(t, true); sfx.tick(t);
     } else {
       lastStep.six = Math.floor(sixPath.dist(t) / 0.62 * 2); lastStep.mono = Math.floor(monoPath.dist(t) / 0.55 * 2); lastStep.jan = Math.floor(janPath.dist(t) / 1.0 * 2);
     }
     lastEvt = t;
     sfx.radio(t >= RADIO_ON && t < 99.4);
-
-    var shot = freeCam ? null : applyCamera(t, camera);
-    return { shot: shot, overlay: overlay(t) };
+    var c = freeCam ? null : applyCamera(t);
+    if (c) { cam = c; camEye = c.eye; }
+    return { cam: c, overlay: overlay(t), t: t };
   }
 
-  return { update: update, duration: DUR, shots: SHOTS, overlay: overlay, resetAudioClock: function (t) { lastEvt = t; } };
+  var SH_UNDER = { x0: 1.1, x1: 4.5, z0: -2.3, z1: -1.1 };
+  function drawBlob(x, z, rx, rz, a) {
+    Rn.draw(shadowQuad, mul(LIBS.translation(x, 0.006, z), LIBS.scaling(rx, 1, rz)), { color: [0, 0, 0], tex: env.blobTex, unlit: true, alpha: a });
+  }
+  // dipanggil tiap frame oleh main.js setelah update()
+  function render(view, proj, eye, exposure, t) {
+    camEye = eye;
+    Rn.beginFrame({
+      view: view, proj: proj, eye: eye, exposure: exposure, ambient: frameLights.ambient, sky: [0.15, 0.15, 0.19], ground: [0.05, 0.04, 0.02],
+      fogColor: [0.04, 0.035, 0.028], fogDensity: 0.07, points: frameLights.points, spot: frameLights.spot
+    });
+    env.drawOpaque();
+    Rn.drawTree(sixRoot, M_.six); Rn.drawTree(monoRoot, M_.mono); if (janVisible) Rn.drawTree(janRoot, M_.jan);
+    if (lighterOn) {
+      var lm = mul(armRWorld, LIBS.translation(0, -0.5, 0.02));
+      Rn.draw(lighterBody, mul(lm, LIBS.translation(0, -0.01, 0)), mLighter); Rn.draw(lighterCap, mul(lm, LIBS.translation(0, 0.038, 0)), mLighterCap);
+    }
+    // --- bayangan proyeksi planar dari lampu (stencil: tidak gelap ganda) ---
+    var Lp, strength;
+    if (lampK.table > 0.05) { Lp = env.lamps.table.pos; strength = 0.6 * Math.min(1, lampK.table); } else { Lp = env.lamps.mid.pos; strength = 0.45 * Math.min(1, lampK.mid); }
+    Rn.beginShadows();
+    ['six', 'mono', 'jan'].forEach(function (k) {
+      if (k === 'jan' && !janVisible) return;
+      var p = P_[k], under = p[0] > SH_UNDER.x0 && p[0] < SH_UNDER.x1 && p[1] > SH_UNDER.z0 && p[1] < SH_UNDER.z1;
+      if (under || strength < 0.02) return;
+      Rn.shadowDraw(k === 'six' ? sixRoot : (k === 'mono' ? monoRoot : janRoot), M_[k], Lp, 0.004, strength);
+    });
+    Rn.endShadows();
+    // --- bayangan kontak lembut di kaki + kolong meja ---
+    Rn.blendAlpha(true);
+    drawBlob(P_.six[0], P_.six[1], 0.42, 0.42, 0.55); drawBlob(P_.mono[0], P_.mono[1], 0.38, 0.38, 0.55);
+    if (janVisible) drawBlob(P_.jan[0], P_.jan[1], 0.75, 0.75, 0.6);
+    drawBlob(env.table.x, env.table.z, 1.9, 0.8, 0.45);
+    Rn.blendAlpha(false);
+    // --- api lighter (unlit additive) ---
+    if (flameK > 0.02) {
+      Rn.blendAdd(true);
+      var fk = flameK, fy = 1.7 + 0.5 * Math.sin(t * 31);
+      Rn.draw(flameGeo, mul(LIBS.translation(flamePos[0], flamePos[1], flamePos[2]), LIBS.scaling(0.016 * fk, 0.02 * fy * fk, 0.016 * fk)), { color: [1, 0.62, 0.2], unlit: true, alpha: 0.9 });
+      Rn.draw(flameGeo, mul(LIBS.translation(flamePos[0], flamePos[1] - 0.004, flamePos[2]), LIBS.scaling(0.009 * fk, 0.015 * fk, 0.009 * fk)), { color: [1, 0.95, 0.75], unlit: true, alpha: 0.95 });
+      Rn.blendAdd(false);
+    }
+    Rn.drawPoints(env.dust, 26, [0.85, 0.8, 0.6], 0.45);
+  }
+
+  return { update: update, render: render, duration: DUR, shots: SHOTS, resetAudioClock: function (t) { lastEvt = t; } };
 };
