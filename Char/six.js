@@ -4,8 +4,8 @@
  *           six_little_nightmares.glb)
  *
  *   Versi ini TIDAK memakai three.js sama sekali. Blok
- *   window.createSixModel (THREE.Group / Mesh / Material) sudah dibuang;
- *   seluruh rendering dilakukan oleh main() lewat gl.*.
+ *   window.createSixModel mengembalikan pohon SceneNode murni;
+ *   rendering dilakukan oleh GL.js (R.prepSix) dan animasi oleh animGL.js.
  *   Bentuk karakter (buildBody, buildHood, buildHead, buildArm, buildLeg)
  *   tidak diubah.
  *
@@ -129,34 +129,48 @@ function buildBody(node) {
     { sz: SZ, nu: 40, nv: 6, capBottom: true, capTop: true, capColor: COL.coatInner }),
     [0, 0, 0.033], 0, 0));
 
-  /* --- rok jas hujan A-line: profil Bézier + tepi bawah spline Bézier periodik --- */
+  /* --- rok jas hujan A-line: profil Bézier + tepi bawah spline Bézier periodik ---
+   *     Dipisah menjadi node 'skirt' (pivot di pinggang) agar bisa bergerak sendiri (gerakan sekunder).
+   *     Lipatan: modulasi radius (pleat) yang menguat ke arah hem & mereda di garis kancing depan. */
+  var SK = Prim.Soup();
   var hem = [0.0, -0.02, 0.008, -0.018, 0.01, -0.02];
-  var TOP_Y = SIX_WAIST_Y, T = 0.012; // T = tebal kain
+  var TOP_Y = SIX_WAIST_Y, T = 0.012, FOLD = 0.045; // T = tebal kain
 
   function outer(u, v) {
     var th = 2 * Math.PI * u;
     var yb = SIX_HEM_Y + periodicBezier(hem, u);
     var B = Prim.bez(SIX_SKIRT, v);
     var y = TOP_Y + (yb - TOP_Y) * v;
-    return [B[0] * Math.cos(th), y, sixCoatCenterZ(y) + SZ * B[0] * Math.sin(th)];
+    var calm = 1 - 0.8 * Math.exp(-Math.pow((th - Math.PI / 2) / 0.55, 2));          // depan (kancing) lebih rata
+    var fold = FOLD * Math.pow(v, 1.4) * calm *
+      (Math.sin(7 * th + 0.6) + 0.55 * Math.sin(13 * th + 2.1) + 0.3 * Math.sin(3 * th + 1.2));
+    var R = B[0] * (1 + fold);
+    return [R * Math.cos(th), y, sixCoatCenterZ(y) + SZ * R * Math.sin(th)];
   }
   var radial = function (p) { return [p[0], 0, p[2] - sixCoatCenterZ(p[1])]; };
   function innerPt(u, v) {
     var p = outer(u, v), n = Prim.numericNormal(outer, u, v, radial);
     return [p[0] - n[0] * T, p[1] - n[1] * T, p[2] - n[2] * T];
   }
-  Prim.grid(S, outer, 48, 10, COL.coat, { hint: radial });
-  Prim.grid(S, innerPt, 48, 10, COL.coatInner,
+  Prim.grid(SK, outer, 104, 12, COL.coat, { hint: radial });
+  Prim.grid(SK, innerPt, 104, 12, COL.coatInner,
     { hint: function (p) { return [-p[0], 0, -(p[2] - sixCoatCenterZ(p[1]))]; } });
   // bibir tepi bawah (menutup antara sisi luar & dalam)
-  Prim.grid(S, function (u, w) {
+  Prim.grid(SK, function (u, w) {
     return LIBS.lerp(outer(u, 1), innerPt(u, 1), w);
-  }, 48, 1, COL.coatLight, {
+  }, 104, 1, COL.coatLight, {
     normal: function (u) {
       var a = outer(u, 1), b = outer(u, 0.995);
       return LIBS.normalize(LIBS.sub(a, b));
     }
   });
+  // pita tumpang-tindih di atas pinggang (di dalam badan atas) agar tidak ada celah saat rok bergerak
+  Prim.grid(SK, function (u, w) {
+    var th = 2 * Math.PI * u, y = SIX_WAIST_Y + 0.035 * (1 - w), R = SIX_R_WAIST - 0.001;
+    return [R * Math.cos(th), y, sixCoatCenterZ(y) + SZ * R * Math.sin(th)];
+  }, 48, 1, COL.coat, { hint: radial });
+  var skirtNode = node.add(new SceneNode('skirt', [0, SIX_WAIST_Y, 0]));
+  skirtNode.soup = Prim.transform(SK, LIBS.compose([0, -SIX_WAIST_Y, 0], [0, 0, 0], [1, 1, 1]));
 
   /* --- bahu rata (GLB: garis bahu lurus di y=0.93*K=1.34, menyatu dengan lengan) --- */
   Prim.merge(S, Prim.ellipsoid([0, 1.287, 0.03], [0.248, 0.056, 0.13], COL.coat, 28, 10));
@@ -256,7 +270,7 @@ function buildHood(node) {
 
     segs.forEach(function (sg) {
       var fn = function (u, w) { return section(u, sg[0] + (sg[1] - sg[0]) * w, wall); };
-      Prim.grid(S, fn, 36, sg[2], col, {
+      Prim.grid(S, fn, 26, sg[2], col, {
         normal: function (u, w) { return Prim.numericNormal(fn, u, w, hint); }
       });
     });
@@ -269,7 +283,7 @@ function buildHood(node) {
       Prim.grid(S, function (u, w) {
         var p = section(u, y, wall);
         return [p[0] * w, y, zc + (p[2] - zc) * w];
-      }, 36, 2, col, { normal: function () { return [0, ny, 0]; } });
+      }, 26, 2, col, { normal: function () { return [0, ny, 0]; } });
     }
     cap(yb, -1);
     cap(yt, 1);
@@ -296,7 +310,7 @@ function buildHood(node) {
   var win = Prim.ellipsoid(
     [0, 0.20, 0.43],
     [0.15, 0.25, 0.27],
-    COL.coatLight, 20, 12
+    COL.coatLight, 16, 10
   );
 
   var hood = CSG.fromSoup(outer)
@@ -341,7 +355,9 @@ function buildHead(node) {
   var cutFront = CSG.fromSoup(Prim.box([0, -0.17, 0.27], [0.15, 0.22, 0.17], COL.hair));   // bukaan wajah
   var cutBottom = CSG.fromSoup(Prim.box([0, -0.35, 0], [0.5, 0.15, 0.5], COL.hair));       // ujung bob rata
   hair = hair.subtract(cutFront).subtract(cutBottom);
-  Prim.merge(S, hair.toSoup());
+  /* rambut = node anak 'hair' (pivot di puncak kepala) agar bisa mengayun sebagai gerakan sekunder */
+  var hairNode = node.add(new SceneNode('hair', [0, 0.14, 0]));
+  hairNode.soup = Prim.transform(hair.toSoup(), LIBS.compose([0, -0.14, 0], [0, 0, 0], [1, 1, 1]));
 
   node.soup = S;
 }
@@ -352,27 +368,40 @@ function buildHead(node) {
  *  lengan 0.325 + tangan 0.094 -> dikali K.
  * ========================================================= */
 function buildArm(node, side) {
-  var S = Prim.Soup();
+  var S = Prim.Soup(), F = Prim.Soup();
   /* Lengan GLB: penampang elips (depan-belakang ~1.2x lebih besar dari tinggi
-   * saat T-pose), tebal hampir konstan, lalu manset melebar di ujung. */
+   * saat T-pose), tebal hampir konstan, lalu manset melebar di ujung.
+   * Kurva Bézier lengan dipotong di t=0.5 (de Casteljau) -> lengan atas + lengan bawah ('foreL/R')
+   * dengan bentuk gabungan IDENTIK pada sudut siku 0. Bola siku menutup sambungan saat menekuk. */
+  var c = [[0.055, 0], [0.052, -0.17], [0.054, -0.38], [0.080, -0.47]];
+  function mid(a, b) { return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]; }
+  var q01 = mid(c[0], c[1]), q12 = mid(c[1], c[2]), q23 = mid(c[2], c[3]);
+  var r0 = mid(q01, q12), r1 = mid(q12, q23), m = mid(r0, r1);
+  var upperC = [c[0], q01, r0, m], lowerC = [m, r1, q23, c[3]];
+  var EY = m[1];                                                     // tinggi siku (lokal lengan)
+
   Prim.merge(S, Prim.ellipsoid([0, 0, 0], [0.056, 0.054, 0.064], COL.coat, 16, 10));
-  Prim.merge(S, Prim.bezierRevolve([[0.055, 0], [0.052, -0.17], [0.054, -0.38], [0.080, -0.47]],
-    COL.coat, { sz: 1.2, nu: 24, nv: 10 }));
+  Prim.merge(S, Prim.bezierRevolve(upperC, COL.coat, { sz: 1.2, nu: 24, nv: 5 }));
+  Prim.merge(S, Prim.ellipsoid([0, EY, 0], [m[0] * 1.03, m[0] * 1.03, m[0] * 1.03 * 1.2], COL.coat, 14, 8));   // sendi siku
+
+  Prim.merge(F, Prim.bezierRevolve(lowerC, COL.coat, { sz: 1.2, nu: 24, nv: 5 }));
   // lipatan manset
-  Prim.merge(S, Prim.frustum(-0.49, 0.082, -0.465, 0.090, COL.coatLight, { sz: 1.2, nu: 24, nv: 1 }));
-  Prim.merge(S, Prim.frustum(-0.49, 0.082, -0.43, 0.082, COL.coatInner, { sz: 1.2, nu: 24, nv: 1, capBottom: true }));
+  Prim.merge(F, Prim.frustum(-0.49, 0.082, -0.465, 0.090, COL.coatLight, { sz: 1.2, nu: 24, nv: 1 }));
+  Prim.merge(F, Prim.frustum(-0.49, 0.082, -0.43, 0.082, COL.coatInner, { sz: 1.2, nu: 24, nv: 1, capBottom: true }));
 
   /* tangan GLB: pipih (tipis di arah kiri-kanan, lebar di depan-belakang),
    * jari rapat meruncing, panjang total dari manset ~0.14 */
-  Prim.merge(S, Prim.ellipsoid([0, -0.525, 0.004], [0.020, 0.045, 0.040], COL.skin, 14, 10)); // telapak
+  Prim.merge(F, Prim.ellipsoid([0, -0.525, 0.004], [0.020, 0.045, 0.040], COL.skin, 14, 10)); // telapak
   for (var f = 0; f < 4; f++) {
     var fz = (f - 1.5) * 0.021, len = [0.034, 0.040, 0.038, 0.030][f];
-    Prim.merge(S, Prim.ellipsoid([0, -0.55 - len, 0.004 + fz], [0.011, len, 0.0095], COL.skin, 8, 6));
+    Prim.merge(F, Prim.ellipsoid([0, -0.55 - len, 0.004 + fz], [0.011, len, 0.0095], COL.skin, 8, 6));
   }
-  Prim.merge(S, Prim.place(                                      // ibu jari
+  Prim.merge(F, Prim.place(                                      // ibu jari
     Prim.ellipsoid([0, 0, 0], [0.010, 0.030, 0.010], COL.skin, 8, 6),
     [0, -0.545, 0.046], 0.45, 0));
   node.soup = S;
+  var fore = node.add(new SceneNode(side > 0 ? 'foreL' : 'foreR', [0, EY, 0]));
+  fore.soup = Prim.transform(F, LIBS.compose([0, -EY, 0], [0, 0, 0], [1, 1, 1]));
 }
 
 /* =========================================================
@@ -381,34 +410,44 @@ function buildArm(node, side) {
  *  (x -0.042..0.143 * K = 0.27), 5 jari kaki.
  * ========================================================= */
 function buildLeg(node, side) {
-  var S = Prim.Soup();
+  var S = Prim.Soup(), F = Prim.Soup();
   /* Kaki = satu tabung mulus (permukaan parametrik) dengan penampang elips.
    * Tiga kurva Bézier kubik (hasil fitting irisan GLB) mengatur sepanjang y:
    *   HW = setengah lebar (kiri-kanan), HD = setengah kedalaman (depan-belakang),
    *   CZ = pergeseran pusat ke depan.
-   * Pergelangan paling ramping di dekat bawah, betis melebar, lalu hampir
-   * konstan ke atas. y lokal = y dunia - 0.60 (dari -0.54 s/d 0.02; ujung bawah masuk ke tumit). */
+   * Tabung dibagi di lutut (v = VK) menjadi paha (node kaki) + betis & telapak (node 'shinL/R');
+   * pada sudut lutut 0 bentuknya identik dengan tabung tunggal. Bola lutut menutup sambungan.
+   * y lokal = y dunia - 0.60 (dari -0.54 s/d 0.02; ujung bawah masuk ke tumit). */
   var HW = [[0.0205], [0.0302], [0.0464], [0.0312]];
   var HD = [[0.0286], [0.0219], [0.0641], [0.0298]];
   var CZ = [[-0.003], [-0.0187], [0.0259], [0.0248]];
-  var Y0 = -0.54, LEN = 0.56;
-  Prim.grid(S, function (u, v) {
+  var Y0 = -0.54, LEN = 0.56, KY = -0.27, VK = (KY - Y0) / LEN;
+  function tube(u, v) {
     var th = 2 * Math.PI * u;
     return [Prim.bez(HW, v)[0] * Math.cos(th), Y0 + LEN * v,
       Prim.bez(CZ, v)[0] + Prim.bez(HD, v)[0] * Math.sin(th)];
-  }, 20, 12, COL.skin, {
-    hint: function (p) { return [p[0], 0, p[2] - Prim.bez(CZ, (p[1] - Y0) / LEN)[0]]; }
-  });
+  }
+  var hint = function (p) { return [p[0], 0, p[2] - Prim.bez(CZ, (p[1] - Y0) / LEN)[0]]; };
+  Prim.grid(S, function (u, w) { return tube(u, VK + (1 - VK) * w); }, 20, 6, COL.skin, { hint: hint });   // paha
+  Prim.grid(F, function (u, w) { return tube(u, VK * w); }, 20, 6, COL.skin, { hint: hint });             // betis
+  var hwK = Prim.bez(HW, VK)[0], hdK = Prim.bez(HD, VK)[0], czK = Prim.bez(CZ, VK)[0];
+  Prim.merge(S, Prim.ellipsoid([0, KY, czK], [hwK * 1.03, hwK * 1.03, hdK * 1.03], COL.skin, 12, 8));       // sendi lutut
   /* telapak kaki: tumit + punggung kaki (ellipsoid pipih), 5 jari kaki
-   * (GLB: panjang x -0.061..0.206, lebar 0.12, tinggi s/d 0.086) */
-  Prim.merge(S, Prim.ellipsoid([0, -0.550, -0.005], [0.042, 0.040, 0.052], COL.skin, 14, 10)); // tumit
-  Prim.merge(S, Prim.ellipsoid([0, -0.568, 0.070], [0.058, 0.032, 0.120], COL.skin, 18, 10));  // telapak
+   * (GLB: panjang x -0.061..0.206, lebar 0.12, tinggi s/d 0.086)
+   * -> node 'foot' (pergelangan di y=-0.53) agar telapak tetap rata saat lutut menekuk */
+  var FT = Prim.Soup(), AY = -0.53;
+  Prim.merge(FT, Prim.ellipsoid([0, -0.550, -0.005], [0.042, 0.040, 0.052], COL.skin, 14, 10)); // tumit
+  Prim.merge(FT, Prim.ellipsoid([0, -0.568, 0.070], [0.058, 0.032, 0.120], COL.skin, 18, 10));  // telapak
   for (var k = 0; k < 5; k++) {
     var tx = (k - 2) * 0.020;
-    Prim.merge(S, Prim.ellipsoid([tx, -0.583, 0.186 - Math.abs(k - 2) * 0.007],
+    Prim.merge(FT, Prim.ellipsoid([tx, -0.583, 0.186 - Math.abs(k - 2) * 0.007],
       [0.0105, 0.0105, 0.018], COL.skin, 8, 6));
   }
   node.soup = S;
+  var shin = node.add(new SceneNode(side > 0 ? 'shinL' : 'shinR', [0, KY, 0]));
+  shin.soup = Prim.transform(F, LIBS.compose([0, -KY, 0], [0, 0, 0], [1, 1, 1]));
+  var foot = shin.add(new SceneNode(side > 0 ? 'footL' : 'footR', [0, AY - KY, 0]));
+  foot.soup = Prim.transform(FT, LIBS.compose([0, -AY, 0], [0, 0, 0], [1, 1, 1]));
 }
 
 function buildEnvironment() {
@@ -439,310 +478,17 @@ function buildScene() {
   var legR = root.add(new SceneNode('legR', [-0.076, 0.60, 0]));
   buildLeg(legR, -1);
 
+  function kid(n, name) { for (var i = 0; i < n.kids.length; i++) if (n.kids[i].name === name) return n.kids[i]; return null; }
   return { root: root, floor: buildEnvironment(),
-    nodes: { head: head, hood: hood, armL: armL, armR: armR, legL: legL, legR: legR } };
+    nodes: { head: head, hood: hood, armL: armL, armR: armR, legL: legL, legR: legR,
+      skirt: kid(root, 'skirt'), hair: kid(head, 'hair'),
+      foreL: kid(armL, 'foreL'), foreR: kid(armR, 'foreR'), shinL: kid(legL, 'shinL'), shinR: kid(legR, 'shinR'),
+      footL: kid(kid(legL, 'shinL'), 'footL'), footR: kid(kid(legR, 'shinR'), 'footR') } };
+  // (footL/footR = anak shinL/shinR, didaftarkan di bawah)
 }
 
-/* =========================================================
- *  RENDERER WebGL
- * ========================================================= */
-function main() {
-  var canvas = document.getElementById('mycanvas');
-  var gl = canvas.getContext('webgl', { antialias: true, stencil: true });
-  if (!gl) { alert('WebGL tidak didukung browser ini.'); return; }
-
-  var vsSrc = [
-    'attribute vec3 position;',
-    'attribute vec3 normal;',
-    'attribute vec3 color;',
-    'uniform mat4 mvp;',
-    'uniform mat4 model;',
-    'uniform mat3 nmat;',
-    'varying vec3 vN; varying vec3 vC; varying vec3 vW;',
-    'void main(void){',
-    '  vec4 w = model * vec4(position, 1.0);',
-    '  vW = w.xyz; vN = nmat * normal; vC = color;',
-    '  gl_Position = mvp * vec4(position, 1.0);',
-    '}'
-  ].join('\n');
-
-  /* ---------------------------------------------------------
-   *  LIGHTING & SHADING (fragment shader)
-   *   - bekerja di ruang linear: albedo = pow(warna, 2.2), akhir: tone-map + gamma
-   *   - KEY (hangat, dari depan-kiri-atas) dengan wrap diffuse (kain lembut)
-   *   - FILL (dingin, dari kanan) + hemisphere ambient (langit/tanah)
-   *   - RIM / fresnel (dingin, dari belakang) agar siluet kuning terpisah dari latar
-   *   - spekular ganda (lebar + tajam) untuk jas hujan karet; kulit: wrap hangat
-   *   - AO palsu berdasar tinggi (kaki dekat lantai lebih gelap)
-   *   - lantai: kolam cahaya (spot) yang memudar ke warna latar
-   *   flat_: 0 = normal, 1 = wireframe, 2 = bayangan planar
-   * --------------------------------------------------------- */
-  var fsSrc = [
-    'precision mediump float;',
-    'varying vec3 vN; varying vec3 vC; varying vec3 vW;',
-    'uniform vec3 eye;',
-    'uniform float flat_;',
-    'uniform float uFloor;',
-    'uniform float uStudio;',
-    'const vec3 BG = vec3(0.050, 0.055, 0.065);',
-    'void main(void){',
-    '  if (flat_ > 1.5) {',
-    '    float r2 = dot(vW.xz, vW.xz);',
-    '    gl_FragColor = vec4(0.0, 0.0, 0.0, 0.55 * exp(-r2 * 0.7) * (1.0 - smoothstep(0.85, 1.55, r2)));',
-    '    return;',
-    '  }',
-    '  if (flat_ > 0.5) { gl_FragColor = vec4(0.85, 0.9, 1.0, 1.0); return; }',
-    '  vec3 N = normalize(vN);',
-    '  vec3 V = normalize(eye - vW);',
-    '  vec3 alb = pow(vC, vec3(2.2));',
-    '  float rb = vC.r - vC.b;',
-    '  float gloss = smoothstep(0.42, 0.48, rb);',
-    '  float skin = smoothstep(0.10, 0.15, rb) * (1.0 - smoothstep(0.26, 0.32, rb));',
-    '  vec3 L1 = normalize(vec3(-0.22, 0.95, 0.32));',
-    '  vec3 L2 = normalize(vec3(0.75, 0.20, 0.35));',
-    '  vec3 L3 = normalize(vec3(0.35, 0.35, -0.90));',
-    '  vec3 keyCol = mix(vec3(1.00, 0.86, 0.66) * 1.55, vec3(1.0, 0.97, 0.92) * 1.15, uStudio);',
-    '  vec3 fillCol = mix(vec3(0.30, 0.40, 0.60) * 0.55, vec3(0.55, 0.62, 0.75) * 0.50, uStudio);',
-    '  vec3 rimCol = mix(vec3(0.50, 0.62, 0.90) * 1.10, vec3(0.80, 0.85, 1.0) * 0.55, uStudio);',
-    '  float wrap = 0.30 + 0.25 * skin;',
-    '  float d1 = clamp((dot(N, L1) + wrap) / (1.0 + wrap), 0.0, 1.0);',
-    '  d1 *= 1.0 - 0.6 * skin * smoothstep(1.36, 1.50, vW.y) * (1.0 - uStudio); // wajah di bawah tudung lebih gelap',
-    '  float d2 = max(dot(N, L2), 0.0);',
-    '  vec3 sky = mix(vec3(0.17, 0.21, 0.29), vec3(0.34, 0.37, 0.43), uStudio);',
-    '  vec3 gnd = mix(vec3(0.09, 0.075, 0.055), vec3(0.20, 0.18, 0.15), uStudio);',
-    '  vec3 amb = mix(gnd, sky, N.y * 0.5 + 0.5);',
-    '  float ao = 1.0;',
-    '  if (uFloor < 0.5) ao = mix(0.55, 1.0, smoothstep(0.0, 0.45, vW.y));',
-    '  float NV = max(dot(N, V), 0.0);',
-    '  float fres = pow(1.0 - NV, 3.0);',
-    '  float rim = fres * (0.30 + 0.70 * max(dot(N, L3), 0.0));',
-    '  vec3 H = normalize(L1 + V);',
-    '  float NH = max(dot(N, H), 0.0);',
-    '  float spec = (pow(NH, 22.0) * 0.28 + pow(NH, 120.0) * 0.85) * (0.55 + 0.45 * fres);',
-    '  spec *= smoothstep(0.0, 0.25, dot(N, L1));',
-    '  vec3 col = alb * (keyCol * d1 + fillCol * d2 + amb * ao);',
-    '  col += alb * skin * vec3(0.16, 0.05, 0.02) * (1.0 - d1);',
-    '  col += keyCol * spec * (gloss + skin * 0.06);',
-    '  col += rimCol * rim * (alb * 0.55 + vec3(0.04) + vec3(0.10) * gloss);',
-    '  if (uFloor > 0.5) {',
-    '    float spot = mix(exp(-dot(vW.xz, vW.xz) * 1.6), 1.0, uStudio);',
-    '    col = mix(pow(BG, vec3(2.2)), col, spot);',
-    '  }',
-    '  col = vec3(1.0) - exp(-col * 1.35);',
-    '  col = pow(col, vec3(1.0 / 2.2));',
-    '  gl_FragColor = vec4(col, 1.0);',
-    '}'
-  ].join('\n');
-
-  function sh(type, src) {
-    var s = gl.createShader(type);
-    gl.shaderSource(s, src); gl.compileShader(s);
-    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
-    return s;
-  }
-  var prog = gl.createProgram();
-  gl.attachShader(prog, sh(gl.VERTEX_SHADER, vsSrc));
-  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fsSrc));
-  gl.linkProgram(prog);
-  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
-  gl.useProgram(prog);
-
-  var aPos = gl.getAttribLocation(prog, 'position');
-  var aNor = gl.getAttribLocation(prog, 'normal');
-  var aCol = gl.getAttribLocation(prog, 'color');
-  var uMvp = gl.getUniformLocation(prog, 'mvp');
-  var uModel = gl.getUniformLocation(prog, 'model');
-  var uNmat = gl.getUniformLocation(prog, 'nmat');
-  var uEye = gl.getUniformLocation(prog, 'eye');
-  var uFlat = gl.getUniformLocation(prog, 'flat_');
-  var uFloor = gl.getUniformLocation(prog, 'uFloor');
-  var uStudio = gl.getUniformLocation(prog, 'uStudio');
-  gl.enableVertexAttribArray(aPos);
-  gl.enableVertexAttribArray(aNor);
-  gl.enableVertexAttribArray(aCol);
-
-  /* ---- bangun scene + upload ---- */
-  var t0 = performance.now();
-  var scene = buildScene();
-  console.log('Build karakter: ' + Math.round(performance.now() - t0) + ' ms');
-
-  function interleave(soup) {
-    var n = soup.p.length / 3, data = new Float32Array(n * 9);
-    for (var i = 0; i < n; i++) {
-      data.set([soup.p[i * 3], soup.p[i * 3 + 1], soup.p[i * 3 + 2],
-        soup.n[i * 3], soup.n[i * 3 + 1], soup.n[i * 3 + 2],
-        soup.c[i * 3], soup.c[i * 3 + 1], soup.c[i * 3 + 2]], i * 9);
-    }
-    return data;
-  }
-  function wireData(data) { // setiap segitiga -> 3 garis
-    var tris = data.length / 27, out = new Float32Array(tris * 6 * 9);
-    for (var t = 0; t < tris; t++) {
-      for (var e = 0; e < 3; e++) {
-        out.set(data.subarray(t * 27 + e * 9, t * 27 + e * 9 + 9), t * 54 + e * 18);
-        out.set(data.subarray(t * 27 + ((e + 1) % 3) * 9, t * 27 + ((e + 1) % 3) * 9 + 9), t * 54 + e * 18 + 9);
-      }
-    }
-    return out;
-  }
-  function upload(soup) {
-    var d = interleave(soup), w = wireData(d);
-    var vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.bufferData(gl.ARRAY_BUFFER, d, gl.STATIC_DRAW);
-    var wb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, wb); gl.bufferData(gl.ARRAY_BUFFER, w, gl.STATIC_DRAW);
-    return { vb: vb, wb: wb, count: d.length / 9, wcount: w.length / 9 };
-  }
-  var totalTris = 0;
-  (function prep(n) {
-    if (n.soup) { n.mesh = upload(n.soup); totalTris += n.mesh.count / 3; }
-    n.kids.forEach(prep);
-  })(scene.root);
-  scene.floor.mesh = upload(scene.floor.soup);
-  var info = document.getElementById('triCount');
-  if (info) info.textContent = Math.round(totalTris).toLocaleString('id-ID');
-
-  /* ---- kamera orbit ---- */
-  var cam = { yaw: 0.55, pitch: 0.12, dist: 4.4, target: [0, 1.0, 0] };
-  var camHome = { yaw: cam.yaw, pitch: cam.pitch, dist: cam.dist };
-  var state = { autoRotate: false, wire: false, idle: false, studio: false, shadow: true };
-
-  var dragging = false, lx = 0, ly = 0;
-  canvas.addEventListener('mousedown', function (e) { dragging = true; lx = e.clientX; ly = e.clientY; });
-  window.addEventListener('mouseup', function () { dragging = false; });
-  window.addEventListener('mousemove', function (e) {
-    if (!dragging) return;
-    cam.yaw -= (e.clientX - lx) * 0.008;
-    cam.pitch = Math.max(-0.5, Math.min(1.2, cam.pitch + (e.clientY - ly) * 0.006));
-    lx = e.clientX; ly = e.clientY;
-  });
-  canvas.addEventListener('wheel', function (e) {
-    e.preventDefault();
-    cam.dist = Math.max(1.5, Math.min(12, cam.dist * (1 + e.deltaY * 0.001)));
-  }, { passive: false });
-  canvas.addEventListener('touchstart', function (e) { dragging = true; lx = e.touches[0].clientX; ly = e.touches[0].clientY; });
-  canvas.addEventListener('touchend', function () { dragging = false; });
-  canvas.addEventListener('touchmove', function (e) {
-    if (!dragging) return; e.preventDefault();
-    cam.yaw -= (e.touches[0].clientX - lx) * 0.008;
-    cam.pitch = Math.max(-0.5, Math.min(1.2, cam.pitch + (e.touches[0].clientY - ly) * 0.006));
-    lx = e.touches[0].clientX; ly = e.touches[0].clientY;
-  }, { passive: false });
-
-  function bind(id, fn) { var el = document.getElementById(id); if (el) el.addEventListener('click', fn); }
-  bind('btnRotate', function () { state.autoRotate = !state.autoRotate; this.classList.toggle('on', state.autoRotate); });
-  bind('btnWire', function () { state.wire = !state.wire; this.classList.toggle('on', state.wire); });
-  bind('btnIdle', function () { state.idle = !state.idle; this.classList.toggle('on', state.idle); });
-  bind('btnLight', function () { state.studio = !state.studio; this.classList.toggle('on', state.studio); });
-  bind('btnShadows', function () { state.shadow = !state.shadow; this.classList.toggle('on', state.shadow); });
-  bind('btnReset', function () { cam.yaw = camHome.yaw; cam.pitch = camHome.pitch; cam.dist = camHome.dist; });
-
-  /* ---- gambar ---- */
-  var viewProj;
-  var shadowPass = false;
-
-  /* bayangan planar: proyeksikan setiap titik sepanjang arah cahaya KEY ke
-   * bidang lantai y = 0.004  (x' = x - Lx/Ly*y, z' = z - Lz/Ly*y)            */
-  var KEY = LIBS.normalize([-0.22, 0.95, 0.32]);
-  var SHADOW = [
-    1, 0, 0, 0,
-    -KEY[0] / KEY[1], 0, -KEY[2] / KEY[1], 0,
-    0, 0, 1, 0,
-    0, 0.004, 0, 1
-  ];
-
-  function drawNode(n, parent) {
-    var model = LIBS.multiply(parent, n.local());
-    if (n.mesh) drawMesh(n.mesh, model);
-    for (var i = 0; i < n.kids.length; i++) drawNode(n.kids[i], model);
-  }
-  function drawMesh(m, model) {
-    if (shadowPass) model = LIBS.multiply(SHADOW, model);
-    gl.uniformMatrix4fv(uMvp, false, new Float32Array(LIBS.multiply(viewProj, model)));
-    gl.uniformMatrix4fv(uModel, false, new Float32Array(model));
-    gl.uniformMatrix3fv(uNmat, false, new Float32Array(LIBS.normalMatrix(model)));
-    gl.bindBuffer(gl.ARRAY_BUFFER, state.wire ? m.wb : m.vb);
-    gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 36, 0);
-    gl.vertexAttribPointer(aNor, 3, gl.FLOAT, false, 36, 12);
-    gl.vertexAttribPointer(aCol, 3, gl.FLOAT, false, 36, 24);
-    gl.drawArrays(state.wire ? gl.LINES : gl.TRIANGLES, 0, state.wire ? m.wcount : m.count);
-  }
-
-  /* animasi idle sederhana (hanya untuk menguji hierarki; animasi lengkap menyusul) */
-  function applyIdle(time) {
-    var N = scene.nodes, b;
-    ['head', 'hood', 'armL', 'armR', 'legL', 'legR'].forEach(function (k) {
-      N[k].t = N[k].base.t.slice(); N[k].r = N[k].base.r.slice();
-    });
-    scene.root.t = [0, 0, 0]; scene.root.s = [1, 1, 1];
-    if (!state.idle) return;
-    var s = Math.sin(time * 1.8);
-    scene.root.s = [1, 1 + 0.008 * s, 1];
-    N.head.r[1] = 0.25 * Math.sin(time * 0.9);
-    N.hood.r[2] = 0.03 * Math.sin(time * 0.9 + 0.5);
-    N.armL.r[2] += 0.04 * s; N.armR.r[2] -= 0.04 * s;
-  }
-
-  function resize() {
-    var dpr = window.devicePixelRatio || 1;
-    var w = Math.floor(canvas.clientWidth * dpr), h = Math.floor(canvas.clientHeight * dpr);
-    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-    gl.viewport(0, 0, canvas.width, canvas.height);
-  }
-
-  gl.enable(gl.DEPTH_TEST);
-  gl.depthFunc(gl.LEQUAL);
-  gl.clearColor(0.050, 0.055, 0.065, 1);
-
-  var last = performance.now();
-  function frame(now) {
-    var dt = (now - last) / 1000; last = now;
-    resize();
-    if (state.autoRotate) cam.yaw += dt * 0.6;
-    applyIdle(now / 1000);
-
-    var eye = [
-      cam.target[0] + cam.dist * Math.cos(cam.pitch) * Math.sin(cam.yaw),
-      cam.target[1] + cam.dist * Math.sin(cam.pitch),
-      cam.target[2] + cam.dist * Math.cos(cam.pitch) * Math.cos(cam.yaw)
-    ];
-    var proj = LIBS.perspective(Math.PI / 4, canvas.width / canvas.height, 0.1, 60);
-    var view = LIBS.lookAt(eye, cam.target, [0, 1, 0]);
-    viewProj = LIBS.multiply(proj, view);
-
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
-    gl.uniform3fv(uEye, new Float32Array(eye));
-    gl.uniform1f(uStudio, state.studio ? 1 : 0);
-
-    /* 1) lantai (kolam cahaya) */
-    gl.uniform1f(uFlat, state.wire ? 1 : 0);
-    gl.uniform1f(uFloor, 1);
-    if (!state.wire) drawNode(scene.floor, LIBS.identity());
-    gl.uniform1f(uFloor, 0);
-
-    /* 2) bayangan planar: stencil agar segitiga yang bertumpuk tidak
-     *    menggelapkan dua kali; blending alpha, tanpa tulis depth */
-    if (state.shadow && !state.wire) {
-      gl.enable(gl.STENCIL_TEST);
-      gl.stencilFunc(gl.EQUAL, 0, 0xFF);
-      gl.stencilOp(gl.KEEP, gl.KEEP, gl.INCR);
-      gl.enable(gl.BLEND);
-      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-      gl.depthMask(false);
-      gl.uniform1f(uFlat, 2);
-      shadowPass = true;
-      drawNode(scene.root, LIBS.identity());
-      shadowPass = false;
-      gl.depthMask(true);
-      gl.disable(gl.BLEND);
-      gl.disable(gl.STENCIL_TEST);
-    }
-
-    /* 3) karakter */
-    gl.uniform1f(uFlat, state.wire ? 1 : 0);
-    drawNode(scene.root, LIBS.identity());
-    requestAnimationFrame(frame);
-  }
-  requestAnimationFrame(frame);
-
-  var ov = document.getElementById('loading');
-  if (ov) ov.style.display = 'none';
-}
+/* Model Six = pohon SceneNode murni (tanpa three.js). Renderer menggambar node.soup. */
+window.createSixModel = function () {
+  var source = buildScene();
+  return { root: source.root, nodes: source.nodes };
+};

@@ -271,6 +271,7 @@ function Node(name, mesh, shine) {
 }
 Node.prototype.add = function (c) { c.parent = this; this.children.push(c); return c; };
 Node.prototype.local = function () {
+  if (this.matrixOverride) return this.matrixOverride;   // dipakai IK lengan (Anim)
   var m = this.base ? new Float32Array(this.base) : LIBS.identity();
   m = LIBS.translate(m, this.position[0], this.position[1], this.position[2]);
   m = LIBS.rotateY(m, this.rotation[1]);
@@ -444,7 +445,25 @@ var Janitor = (function () {
   // ---- BADAN / JAS : cone terpotong + detail kurva (kerah, hem, saku, kancing) ----
   function buildBody() {
     var parts = [], k;
-    var jacket = Geo.frustum(JRB, JRT, JH, 48, tint(COL.jacket, 0.07, 1.1));
+    // inti (tutup atas/bawah) sedikit lebih kecil + permukaan jas berlipat di atasnya
+    var core = Geo.frustum(JRB * 0.93, JRT * 0.93, JH, 32, tint(COL.jacket, 0.07, 1.1));
+    parts.push(place(core, [0, J0, 0], [0, 0, 0], [1, 1, JZ]));
+    // warna usang: hem menggelap/kotor, noda tak beraturan, variasi kain
+    var jBase = tint(COL.jacket, 0.07, 1.1);
+    var jColor = function (p) {
+      var c = jBase(p), v = p[1] / JH;
+      var st = Math.max(0, Math.sin(p[0] * 13 + p[1] * 7) * Math.sin(p[2] * 11 - p[1] * 5));
+      var k = 1 - 0.30 * Math.pow(1 - v, 3) - 0.16 * st * st - 0.05 * Math.max(0, Math.sin(p[1] * 60 + p[0] * 9));
+      return [c[0] * k, c[1] * k, c[2] * k];
+    };
+    var jacket = Geo.surface(function (u, v) {
+      var th = -2 * PI * u, a = ((th % (2 * PI)) + 2 * PI) % (2 * PI), y = v * JH;
+      var calm = 1 - 0.95 * Math.exp(-Math.pow((a - PI / 2) / 0.9, 2));       // depan (kancing/saku/kelim) tetap rata
+      var f = 0.035 * (0.3 + 0.7 * (1 - v)) * calm * (Math.sin(6 * th + 0.5) + 0.6 * Math.sin(11 * th + 1.7) + 0.35 * Math.sin(3 * th + 2.2)) +
+              0.012 * (1 - v) * calm * Math.sin(v * 40 + 3 * th);             // lipatan vertikal + kerutan horizontal
+      var r = jr(J0 + y) * (1 + f);
+      return [r * Math.cos(th), y, r * Math.sin(th)];
+    }, 96, 14, jColor);
     parts.push(place(jacket, [0, J0, 0], [0, 0, 0], [1, 1, JZ]));
 
     // hem bawah (loop Bezier)
@@ -509,8 +528,20 @@ var Janitor = (function () {
   }
 
   // ---- KAKI (cylinder pendek) & SEPATU (ellipsoid) ----
+  // Kaki dibagi di lutut (y=-0.21 dari pivot pinggul): paha di node kaki, betis + sepatu di node 'shin*'.
   function buildLeg() {
-    return place(Geo.cylinder(0.085, 0.42, 20, tint(COL.pants, 0.06, 1.2)), [0, -0.42, 0]);
+    var pc = tint(COL.pants, 0.06, 1.2);
+    return Geo.merge([
+      place(Geo.cylinder(0.085, 0.21, 20, pc), [0, -0.21, 0]),
+      place(Geo.ellipsoid(0.088, 0.088, 0.088, 10, 14, pc), [0, -0.21, 0])          // sendi lutut
+    ]);
+  }
+  function buildShin() {
+    var pc = tint(COL.pants, 0.06, 1.2);
+    return Geo.merge([
+      place(Geo.cylinder(0.085, 0.21, 20, pc), [0, -0.21, 0]),
+      place(Geo.cylinder(0.096, 0.045, 20, tint(COL.jacketDk, 0.08, 1.4), false), [0, -0.21, 0])   // manset celana usang
+    ]);
   }
   function buildShoe() {
     return Geo.ellipsoid(0.115, 0.075, 0.19, 18, 24, tint(COL.shoe, 0.10, 1.5));
@@ -631,8 +662,10 @@ var Janitor = (function () {
     [-1, 1].forEach(function (s) {
       var leg = root.add(reg(node(s < 0 ? 'legL' : 'legR', buildLeg(), 8)));
       leg.position = [s * 0.14, 0.5, 0];
-      var shoe = leg.add(reg(node(s < 0 ? 'shoeL' : 'shoeR', buildShoe(), 30)));
-      shoe.position = [0, -0.425, 0.07];
+      var shin = leg.add(reg(node(s < 0 ? 'shinL' : 'shinR', buildShin(), 8)));
+      shin.position = [0, -0.21, 0];
+      var shoe = shin.add(reg(node(s < 0 ? 'shoeL' : 'shoeR', buildShoe(), 30)));
+      shoe.position = [0, -0.215, 0.07];
     });
 
     // kepala (pivot di leher)
@@ -711,34 +744,8 @@ var Janitor = (function () {
 })();
 
 window.createJanitorModel = function () {
-  var janitor = Janitor.create(null);
-  var character = new THREE.Group();
-
-  function addNode(node, parent) {
-    var group = new THREE.Group();
-    group.matrixAutoUpdate = false;
-    group.matrix.fromArray(node.local());
-    parent.add(group);
-
-    if (node.mesh) {
-      var geometry = new THREE.BufferGeometry();
-      geometry.setAttribute('position', new THREE.Float32BufferAttribute(node.mesh.p, 3));
-      geometry.setAttribute('normal', new THREE.Float32BufferAttribute(node.mesh.n, 3));
-      geometry.setAttribute('color', new THREE.Float32BufferAttribute(node.mesh.c, 3));
-      geometry.setIndex(node.mesh.i);
-      group.add(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
-        vertexColors: true,
-        roughness: 0.82,
-        side: THREE.DoubleSide
-      })));
-    }
-
-    node.children.forEach(function (child) { addNode(child, group); });
-  }
-
-  addNode(janitor.root, character);
-  window.janitor = janitor;
-  return character;
+  var janitor = Janitor.create(null);   // gl = null -> mesh tetap berupa array
+  return { root: janitor.root, nodes: janitor.nodes };
 };
 
 
